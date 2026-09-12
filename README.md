@@ -81,7 +81,10 @@ make run         # builds, then runs against config/config.example.yaml
 
 The whole pipeline is covered by unit tests using fakes/`httptest` servers
 (no real network calls in `go test ./...`), and every source connector was
-additionally validated against the real live APIs during development. Only
+additionally validated against the real live APIs during development. Note
+that boards are not forever - a company can retire its public board (see
+"Verifying a board before you add it"), which fails quietly unless you read
+the run's log line. Only
 `ai.baseURL` and `notify.ntfy.url` are configurable per-deployment; you can
 point them at local fake servers to smoke-test the full binary without
 spending real API credits - see the `Score`/`Notify` interfaces in
@@ -296,6 +299,58 @@ sources:
     site: AcmeCareers                  # path segment after that (case-sensitive)
     displayName: "Acme"
 ```
+
+### Verifying a board before you add it
+
+A wrong or retired board token does **not** fail the run: the connector logs
+one `ERROR source fetch failed` line, the other sources still produce
+matches, and the process still exits 0. So a misconfigured company can sit
+in your config for months producing nothing. Check the URL yourself first -
+one `curl` per company is enough:
+
+```sh
+# Greenhouse (200 = ok, 404 = board retired/renamed)
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  https://boards-api.greenhouse.io/v1/boards/grafanalabs/jobs
+
+# Lever / Ashby
+curl -sS -o /dev/null -w '%{http_code}\n' https://api.lever.co/v0/postings/palantir?mode=json
+curl -sS -o /dev/null -w '%{http_code}\n' https://api.ashbyhq.com/posting-api/job-board/openai
+
+# SmartRecruiters is the exception: it answers 200 with an empty result for
+# *any* slug (its slugs are also case-sensitive - "BoschGroup" resolves,
+# "Bosch" does not), so check the body instead of the status code
+curl -sS 'https://api.smartrecruiters.com/v1/companies/BoschGroup/postings' |\
+  grep -o '"totalFound":[0-9]*'
+```
+
+Workday reports the specific problem in the status code, which is worth
+knowing because only one of the four is fixable by editing your config:
+
+```sh
+curl -sS -o /dev/null -w '%{http_code}\n' -X POST \
+  -H 'Content-Type: application/json' -H 'Accept: application/json' \
+  -d '{"appliedFacets":{},"limit":20,"offset":0,"searchText":""}' \
+  https://nvidia.wd5.myworkdayjobs.com/wday/cxs/nvidia/NVIDIAExternalCareerSite/jobs
+```
+
+- `200` - good tenant and site; use it.
+- `422` - the **tenant** (host prefix) is wrong.
+- `404` - tenant is right, the **site** slug is wrong (case-sensitive).
+- `401` - the tenant exists but requires credentials, so anonymous API
+  reads are off. No connector setting can work around this; skip the
+  company.
+
+Two companies that look like they should work but do not, so you don't
+re-add them:
+
+- **HashiCorp** - its Greenhouse board was retired (the old
+  `boards.greenhouse.io/hashicorp` URL now redirects to a 404) around the
+  IBM acquisition; hiring moved to IBM's careers site, which exposes no
+  public JSON API.
+- **Atlassian** - a real Workday customer on `atlassian.wd5.myworkdayjobs.com`,
+  but every anonymous `/wday/cxs/...` request returns `401 Unable to verify
+  credentials for system account`, for every site slug. Not scrapeable.
 
 ### Tuning relevance
 
@@ -557,6 +612,11 @@ Deliberately left out of this hardening pass, so they aren't lost:
   search has no open JSON endpoint) - adding them would mean bespoke, more
   fragile HTML scraping. Left out to keep the connector set reliable;
   revisit if it becomes worth the maintenance cost.
+- **HashiCorp, Atlassian**: not a missing connector but unavailable data -
+  HashiCorp's public Greenhouse board was retired (hiring now runs through
+  IBM's careers site) and Atlassian's Workday tenant rejects anonymous API
+  reads with `401`. Both were in the default config and removed; see
+  "Verifying a board before you add it" for the details.
 - **Discovery mode**: finding companies you haven't explicitly listed
   (e.g. via a self-hosted metasearch engine) was considered but is out of
   scope for now - this project only watches companies you configure.
