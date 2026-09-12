@@ -35,10 +35,13 @@ spec:
             fsGroup: 65532
           containers:
             - name: go-get-a-job
-              # Build from the Dockerfile in this repo and push to a
-              # registry your cluster can pull from, then update this to
-              # that image reference (e.g. ghcr.io/you/go-get-a-job:v1).
-              image: go-get-a-job:latest
+              # Published by .github/workflows/docker-build.yml on every
+              # push to main. imagePullPolicy is explicit (rather than
+              # relying on the implicit "Always" default Kubernetes uses
+              # for the ":latest" tag) so this stays correct even if the
+              # tag is ever pinned to something else later.
+              image: ghcr.io/erik-schuetze/go-get-a-job:latest
+              imagePullPolicy: Always
               args: ["--config", "/etc/go-get-a-job/config.yaml"]
               envFrom:
                 - secretRef:

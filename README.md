@@ -92,14 +92,15 @@ explicitly warns against NFS-style locking). Swap `storageClassName` in
 `deploy/pvc.yaml` / `deploy/ntfy-pvc.yaml` if your cluster uses something
 else.
 
-### 1. Build and push the image
+### 1. Image
 
-```shell
-docker build -t <your-registry>/go-get-a-job:v1 .
-docker push <your-registry>/go-get-a-job:v1
-```
-
-Update the `image:` field in `deploy/cronjob.yaml` accordingly.
+`.github/workflows/docker-build.yml` builds and publishes the image to
+`ghcr.io/erik-schuetze/go-get-a-job` automatically on every push to `main`
+(and on `v*` tags). `deploy/cronjob.yaml` already points at
+`ghcr.io/erik-schuetze/go-get-a-job:latest` - nothing to do here unless
+you've forked this to your own GitHub account, in which case update both
+the image reference in `deploy/cronjob.yaml` and the workflow will publish
+to your own `ghcr.io/<you>/go-get-a-job` automatically once you push.
 
 ### 2. Create the namespace, config, and ntfy stack
 
@@ -130,12 +131,16 @@ Use that token as `NTFY_TOKEN` in the next step. Use the same
 username/password to log in from the ntfy mobile/desktop app once you can
 reach the server (see step 5).
 
-### 4. Create the real secret
+### 4. Create the secret
+
+Create the Secret directly with `kubectl` - no file is ever written to disk,
+so nothing sensitive passes through this repo, git, or any AI tool:
 
 ```shell
-cp deploy/secret.example.yaml deploy/secret.yaml   # git-ignored, never commit this
-# edit deploy/secret.yaml: set DEEPSEEK_API_KEY and NTFY_TOKEN
-kubectl apply -f deploy/secret.yaml
+kubectl create secret generic go-get-a-job-secrets \
+  --namespace go-get-a-job \
+  --from-literal=DEEPSEEK_API_KEY='<your-deepseek-api-key>' \
+  --from-literal=NTFY_TOKEN='<the-token-from-step-3>'
 ```
 
 ### 5. Deploy the CronJob
@@ -225,3 +230,7 @@ sources:
 - **Frontend**: matches arrive via ntfy; there's no web UI. The SQLite
   store (`store.path`) can be inspected directly with any SQLite client if
   you want to see history.
+
+## License
+
+[MIT](LICENSE)

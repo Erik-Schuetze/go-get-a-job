@@ -6,6 +6,11 @@ kind: PersistentVolumeClaim
 metadata:
   name: ntfy-data
   namespace: go-get-a-job
+  annotations:
+    # Per homecluster's own docs/gitops.md: protects this volume (and its
+    # data - your ntfy user/token database) if the ArgoCD Application is
+    # ever deleted/pruned from git.
+    argocd.argoproj.io/sync-options: Delete=false
 spec:
   accessModes:
     - ReadWriteOnce

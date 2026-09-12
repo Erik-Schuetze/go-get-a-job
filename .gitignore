@@ -11,6 +11,9 @@
 deploy/secret.yaml
 .env
 
+# Local planning notes, never shared/committed
+/backlog.md
+
 # IDE / OS
 .idea/
 .DS_Store
