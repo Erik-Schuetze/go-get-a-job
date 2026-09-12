@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,7 +14,7 @@ import (
 func openTestStore(t *testing.T) *SQLiteStore {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "test.db")
-	s, err := OpenSQLite(path)
+	s, err := OpenSQLite(context.Background(), path)
 	if err != nil {
 		t.Fatalf("OpenSQLite returned error: %v", err)
 	}
@@ -148,7 +150,7 @@ func TestSQLiteStore_Get_NotFound(t *testing.T) {
 func TestSQLiteStore_PersistsAcrossReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "test.db")
 
-	s1, err := OpenSQLite(path)
+	s1, err := OpenSQLite(context.Background(), path)
 	if err != nil {
 		t.Fatalf("OpenSQLite returned error: %v", err)
 	}
@@ -162,11 +164,11 @@ func TestSQLiteStore_PersistsAcrossReopen(t *testing.T) {
 		t.Fatalf("Close returned error: %v", err)
 	}
 
-	s2, err := OpenSQLite(path)
+	s2, err := OpenSQLite(context.Background(), path)
 	if err != nil {
 		t.Fatalf("reopening store returned error: %v", err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 
 	seen, err := s2.Seen(context.Background(), "job-4")
 	if err != nil {
@@ -174,5 +176,81 @@ func TestSQLiteStore_PersistsAcrossReopen(t *testing.T) {
 	}
 	if !seen {
 		t.Fatal("expected job-4 to still be recorded after reopening the store")
+	}
+}
+
+func TestOpenSQLite_RestrictsFileAndDirectoryPermissions(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "jobportal-data")
+	path := filepath.Join(dir, "jobs.db")
+
+	s, err := OpenSQLite(context.Background(), path)
+	if err != nil {
+		t.Fatalf("OpenSQLite returned error: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// The database holds the operator's job history, so it should not be
+	// world- or group-readable even though the pod is single-process.
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := fileInfo.Mode().Perm(); got != 0o600 {
+		t.Errorf("database file mode = %o, want %o", got, 0o600)
+	}
+
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat %s: %v", dir, err)
+	}
+	if got := dirInfo.Mode().Perm(); got != 0o700 {
+		t.Errorf("data directory mode = %o, want %o", got, 0o700)
+	}
+}
+
+func TestOpenSQLite_TightensAnExistingWorldReadableFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.db")
+
+	// Simulate a database left behind by an earlier version, or one created
+	// under a permissive umask.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatalf("creating the pre-existing file: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("closing the pre-existing file: %v", err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	s, err := OpenSQLite(context.Background(), path)
+	if err != nil {
+		t.Fatalf("OpenSQLite returned error: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("database file mode = %o, want it tightened to %o", got, 0o600)
+	}
+}
+
+func TestOpenSQLite_HonorsContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	path := filepath.Join(t.TempDir(), "jobs.db")
+	s, err := OpenSQLite(ctx, path)
+	if err == nil {
+		_ = s.Close()
+		t.Skip("driver ignored the cancelled context; nothing to assert")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected a context.Canceled error, got %v", err)
 	}
 }

@@ -7,6 +7,11 @@ on:
     tags:
       - 'v*'
 
+# Least privilege for the whole workflow; the job that actually pushes adds
+# the one permission it needs on top of this.
+permissions:
+  contents: read
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
@@ -14,12 +19,25 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # No explicit permissions before this: the job inherited the repository
+    # default, which for older repositories is read/write. Nothing here
+    # touches the API, so it gets the same read-only pair as the workflow.
+    permissions:
+      contents: read
     steps:
+      # Actions are pinned to full commit SHAs. A tag such as @v4 is a
+      # mutable ref that the action's owners (or anyone who compromises
+      # their account) can repoint at new code, which would then run here
+      # with this workflow's token. The trailing comment records which
+      # release the SHA corresponds to, and Dependabot
+      # (.github/dependabot.yml) keeps both in sync.
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
 
@@ -50,10 +68,15 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The checkout's git credential is only needed by steps that push
+          # back to the repository; this one doesn't, so it stays out of
+          # .git/config where later steps could read it.
+          persist-credentials: false
 
       - name: Log in to the Container registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -61,16 +84,26 @@ jobs:
 
       - name: Extract metadata for Docker
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Image tags follow semver and mirror the git tag exactly: tag
+          # v0.2.0 publishes v0.2.0. That matters because the manifest is the
+          # only place the version is written down, and a reviewer should be
+          # able to copy the release name into deploy/cronjob.yaml unchanged.
+          # (The default {{version}} pattern would strip the "v", producing a
+          # tag that no longer matches the release it came from.)
+          #
+          # The branch and short-SHA tags are convenience/traceability tags
+          # only - they are mutable by definition, so nothing that runs
+          # unattended may reference them.
           tags: |
             type=ref,event=branch
-            type=semver,pattern={{version}}
+            type=semver,pattern=v{{version}}
             type=sha,prefix=,suffix=,format=short
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
           push: true

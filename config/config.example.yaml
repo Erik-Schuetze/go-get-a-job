@@ -83,6 +83,9 @@ ai:
   # itself comes from a Kubernetes Secret at deploy time, never from this
   # file.
   apiKeyEnv: DEEPSEEK_API_KEY
+  # Must be an absolute https URL with no userinfo, query string, or fragment:
+  # this value and the API key travel together, so it is validated at startup
+  # (see the security section of the README for why).
   baseURL: https://api.deepseek.com
   model: deepseek-chat
 
@@ -99,10 +102,16 @@ ai:
 notify:
   type: ntfy
   ntfy:
+    # Must be https for any host outside the cluster. Plain http is accepted
+    # only for *.svc / *.svc.cluster.local / *.cluster.local / localhost /
+    # loopback IPs, so the in-cluster hop below is allowed but a remote one
+    # cannot silently be downgraded - this URL receives the bearer token from
+    # tokenEnv on every publish.
     url: http://ntfy.go-get-a-job.svc.cluster.local
     topic: job-matches
     # Optional: name of the environment variable holding an ntfy access
-    # token, if your topic/server requires auth (recommended).
+    # token, if your topic/server requires auth (recommended). Create it as a
+    # non-admin user with access to just this topic - see the README.
     tokenEnv: NTFY_TOKEN
 
 store:

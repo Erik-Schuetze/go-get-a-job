@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/Erik-Schuetze/go-get-a-job/internal/httpbody"
 	"github.com/Erik-Schuetze/go-get-a-job/internal/model"
 )
 
@@ -44,29 +45,40 @@ type Workday struct {
 	Site        string
 	DisplayName string
 
-	HTTPClient *http.Client
+	HTTPClient       *http.Client
+	MaxResponseBytes int64
 }
 
 // NewWorkday builds a Workday source for the given tenant/host/site and
 // human-readable display name.
 func NewWorkday(tenant, host, site, displayName string) *Workday {
 	return &Workday{
-		Tenant:      tenant,
-		Host:        host,
-		Site:        site,
-		DisplayName: displayName,
-		HTTPClient:  defaultHTTPClient(),
+		Tenant:           tenant,
+		Host:             host,
+		Site:             site,
+		DisplayName:      displayName,
+		HTTPClient:       defaultHTTPClient(),
+		MaxResponseBytes: httpbody.MaxJSONBytes,
 	}
 }
 
 func (w *Workday) Name() string { return "workday" }
 
-func (w *Workday) jobsURL() string {
-	return fmt.Sprintf("https://%s/wday/cxs/%s/%s/jobs", w.Host, w.Tenant, w.Site)
+func (w *Workday) jobsURL() (string, error) {
+	return buildURL("https://"+w.Host, "", "wday", "cxs", w.Tenant, w.Site, "jobs")
 }
 
-func (w *Workday) detailURL(externalPath string) string {
-	return fmt.Sprintf("https://%s/wday/cxs/%s/%s%s", w.Host, w.Tenant, w.Site, externalPath)
+// detailURL appends an untrusted path from the list response to this
+// tenant's fixed API prefix. externalPath is normalized by
+// sanitizePathSuffix rather than escaped as a single segment, because
+// Workday's real values are multi-segment paths (e.g.
+// "/job/Berlin-Engineer_JR2017846") whose separators must be preserved.
+func (w *Workday) detailURL(externalPath string) (string, error) {
+	base, err := buildURL("https://"+w.Host, "", "wday", "cxs", w.Tenant, w.Site)
+	if err != nil {
+		return "", err
+	}
+	return base + sanitizePathSuffix(externalPath), nil
 }
 
 type workdayListRequest struct {
@@ -151,7 +163,12 @@ func (w *Workday) fetchList(ctx context.Context) ([]workdayListPosting, error) {
 			return nil, fmt.Errorf("workday(%s): encoding list request: %w", w.Tenant, err)
 		}
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.jobsURL(), bytes.NewReader(bodyBytes))
+		url, err := w.jobsURL()
+		if err != nil {
+			return nil, fmt.Errorf("workday(%s): %w", w.Tenant, err)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 		if err != nil {
 			return nil, fmt.Errorf("workday(%s): building list request: %w", w.Tenant, err)
 		}
@@ -163,15 +180,15 @@ func (w *Workday) fetchList(ctx context.Context) ([]workdayListPosting, error) {
 		}
 
 		var parsed workdayListResponse
-		decErr := json.NewDecoder(resp.Body).Decode(&parsed)
+		decErr := httpbody.DecodeJSON(resp.Body, w.MaxResponseBytes, &parsed)
 		status := resp.StatusCode
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		if status != http.StatusOK {
 			return nil, fmt.Errorf("workday(%s): unexpected status %d", w.Tenant, status)
 		}
 		if decErr != nil {
-			return nil, fmt.Errorf("workday(%s): decoding list response: %w", w.Tenant, decErr)
+			return nil, fmt.Errorf("workday(%s): reading list response: %w", w.Tenant, decErr)
 		}
 
 		all = append(all, parsed.JobPostings...)
@@ -186,7 +203,12 @@ func (w *Workday) fetchList(ctx context.Context) ([]workdayListPosting, error) {
 }
 
 func (w *Workday) fetchDetail(ctx context.Context, posting workdayListPosting) (*model.Job, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, w.detailURL(posting.ExternalPath), nil)
+	detailURL, err := w.detailURL(posting.ExternalPath)
+	if err != nil {
+		return nil, fmt.Errorf("workday(%s): %w", w.Tenant, err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, detailURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("workday(%s): building detail request for %s: %w", w.Tenant, posting.ExternalPath, err)
 	}
@@ -195,20 +217,26 @@ func (w *Workday) fetchDetail(ctx context.Context, posting workdayListPosting) (
 	if err != nil {
 		return nil, fmt.Errorf("workday(%s): detail request failed for %s: %w", w.Tenant, posting.ExternalPath, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("workday(%s): unexpected detail status %d for %s", w.Tenant, resp.StatusCode, posting.ExternalPath)
 	}
 
 	var detail workdayDetailResponse
-	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
-		return nil, fmt.Errorf("workday(%s): decoding detail for %s: %w", w.Tenant, posting.ExternalPath, err)
+	if err := httpbody.DecodeJSON(resp.Body, w.MaxResponseBytes, &detail); err != nil {
+		return nil, fmt.Errorf("workday(%s): reading detail for %s: %w", w.Tenant, posting.ExternalPath, err)
 	}
 
 	url := detail.JobPostingInfo.ExternalURL
 	if url == "" {
-		url = fmt.Sprintf("https://%s/%s%s", w.Host, w.Site, posting.ExternalPath)
+		// Fallback when the detail response omits the canonical URL: rebuild
+		// it from the same sanitized path used for the request.
+		base, err := buildURL("https://"+w.Host, "", w.Site)
+		if err != nil {
+			return nil, fmt.Errorf("workday(%s): %w", w.Tenant, err)
+		}
+		url = base + sanitizePathSuffix(posting.ExternalPath)
 	}
 
 	return &model.Job{

@@ -60,6 +60,8 @@ internal/filter/      keyword pre-filter + AI relevance scorer
 internal/store/       SQLite-backed dedup store
 internal/notify/      notifier interface + ntfy implementation
 internal/runner/      orchestrates sources -> filter -> store -> notify
+internal/sanitize/    strips control characters from untrusted text
+internal/httpbody/    bounded reads of untrusted response bodies
 config/               example YAML config
 deploy/               plain Kubernetes manifests (no Kustomize/Helm)
 Dockerfile            multi-stage build -> distroless static image
@@ -68,10 +70,13 @@ Dockerfile            multi-stage build -> distroless static image
 ## Local development
 
 ```shell
-make test    # go test ./...
-make vet     # go vet ./...
-make build   # builds ./bin/go-get-a-job
-make run     # builds, then runs against config/config.example.yaml
+make test        # go test ./...
+make test-race   # go test ./... -race
+make vet         # go vet ./...
+make lint        # golangci-lint (version pinned in the Makefile)
+make vuln        # govulncheck
+make build       # builds ./bin/go-get-a-job
+make run         # builds, then runs against config/config.example.yaml
 ```
 
 The whole pipeline is covered by unit tests using fakes/`httptest` servers
@@ -81,6 +86,10 @@ additionally validated against the real live APIs during development. Only
 point them at local fake servers to smoke-test the full binary without
 spending real API credits - see the `Score`/`Notify` interfaces in
 `internal/filter` and `internal/notify` if you want to do the same.
+
+Before deploying, read [Security](#security) - it explains the reasoning
+behind the manifests in `deploy/`, and the parts that fail open unless you
+verify them.
 
 ## Deploying to Kubernetes
 
@@ -96,13 +105,45 @@ else.
 
 `.github/workflows/docker-build.yml` builds and publishes the image to
 `ghcr.io/erik-schuetze/go-get-a-job` automatically on every push to `main`
-(and on `v*` tags). `deploy/cronjob.yaml` already points at
-`ghcr.io/erik-schuetze/go-get-a-job:latest` - nothing to do here unless
-you've forked this to your own GitHub account, in which case update both
-the image reference in `deploy/cronjob.yaml` and the workflow will publish
-to your own `ghcr.io/<you>/go-get-a-job` automatically once you push.
+(and on `v*` tags). Release image tags follow semver and mirror the git tag
+exactly, so tag `v0.2.0` publishes `v0.2.0` - the same string as the GitHub
+release and the same string you copy into the manifest. (`main` and a
+short-SHA tag are published alongside it for traceability, but both are
+mutable by definition, so nothing that runs unattended may reference them.)
 
-### 2. Create the namespace, config, and ntfy stack
+`deploy/cronjob.yaml` points at a **release tag plus a digest**, e.g.:
+
+```yaml
+image: ghcr.io/erik-schuetze/go-get-a-job:v0.2.0@sha256:d1fff42c...
+imagePullPolicy: IfNotPresent
+```
+
+The digest is what makes it immutable: a scheduled run always executes
+exactly the reviewed image, never "whatever is newest in the registry".
+That matters because the CronJob runs unattended - an unpinned `:latest`
+plus `imagePullPolicy: Always` means every run is a silent, unreviewed
+upgrade with no diff and no rollback artifact.
+
+To move to a new release, change the tag *and* the digest in
+`deploy/cronjob.yaml` in one reviewed commit; the previous digest is your
+rollback. Both values come from the same `docker buildx imagetools
+inspect` / `docker manifest inspect` output:
+
+```shell
+docker buildx imagetools inspect ghcr.io/erik-schuetze/go-get-a-job:v0.2.0
+# -> look for the top-level "Digest:" (the multi-arch manifest list)
+```
+
+> `v0.1.0` predates that convention and was published as `0.1.0`, so it is
+> the one release whose image tag has no leading `v`. Every release from
+> `v0.2.0` on is `vX.Y.Z`.
+
+Nothing to do here at all unless you've forked this to your own GitHub
+account, in which case update the image reference in `deploy/cronjob.yaml`
+too - the workflow publishes to your own `ghcr.io/<you>/go-get-a-job`
+automatically once you push.
+
+### 2. Create the namespace, config, ntfy, and network policy
 
 ```shell
 kubectl apply -f deploy/namespace.yaml
@@ -112,24 +153,61 @@ kubectl apply -f deploy/ntfy-pvc.yaml
 kubectl apply -f deploy/ntfy-deployment.yaml
 kubectl apply -f deploy/ntfy-service.yaml
 kubectl apply -f deploy/pvc.yaml
+# Last, once the workloads above are confirmed healthy (see the security
+# section for why the ordering matters):
+kubectl apply -f deploy/networkpolicy.yaml
 ```
+
+`deploy/namespace.yaml` also carries a Pod Security Admission `restricted`
+label, and `deploy/networkpolicy.yaml` is a default-deny. Both are
+fail-open when they don't engage, so **verify them** rather than trusting
+that the YAML applied - see [Security](#security).
 
 ### 3. One-time ntfy user/token setup
 
 The ntfy server starts with `auth-default-access: deny-all`, so nothing
-can publish or subscribe until you create a user and an access token:
+can publish or subscribe until you create a user and grant it access to
+one topic.
+
+Create the pipeline user **without** `--role=admin` and grant it read/write
+on the topic it actually publishes to:
 
 ```shell
 kubectl -n go-get-a-job exec deploy/ntfy -- env NTFY_PASSWORD='<choose-a-password>' \
-  ntfy user add --role=admin go-get-a-job-user
+  ntfy user add go-get-a-job-user
+
+# Grant access to the one topic the pipeline publishes to (default: job-matches).
+kubectl -n go-get-a-job exec deploy/ntfy -- ntfy access go-get-a-job-user job-matches rw
 
 kubectl -n go-get-a-job exec deploy/ntfy -- ntfy token add go-get-a-job-user
 # -> prints something like: token tk_xxxxxxxxxxxxxxxxxxxx created for user go-get-a-job-user
 ```
 
-Use that token as `NTFY_TOKEN` in the next step. Use the same
-username/password to log in from the ntfy mobile/desktop app once you can
-reach the server (see step 5).
+Use that token as `NTFY_TOKEN` in the next step.
+
+> **Why not `--role=admin`?** An admin token can administer the whole
+> server - create users, read every topic, change settings. This server is
+> commonly published under a public hostname so a phone can reach it away
+> from home (see step 6), so the credential the pipeline carries should be
+> the smallest one that works: publish/subscribe on one topic. `deny-all`
+> plus a per-topic ACL means a leaked pipeline token can write to
+> `job-matches` and nothing else.
+>
+> **Rotating it.** Treat this token as a real production credential:
+> `ntfy token add` a new one, update the Secret, then
+> `ntfy token remove <old-token>` (or delete the user, which revokes all of
+> its tokens at once and forces a fresh login in the phone app as well).
+> Everything the App uses is in `auth.db` on the ntfy PVC, so this is an
+> `auth.db`-backed manual operation - nothing here is in Git.
+
+To receive notifications yourself, create a second user for your phone and
+give it `ro` (or `rw`) on the same topic:
+
+```shell
+kubectl -n go-get-a-job exec deploy/ntfy -- env NTFY_PASSWORD='<your-password>' \
+  ntfy user add your-phone-user
+kubectl -n go-get-a-job exec deploy/ntfy -- ntfy access your-phone-user job-matches ro
+```
 
 ### 4. Create the secret
 
@@ -162,14 +240,25 @@ kubectl -n go-get-a-job logs -f job/go-get-a-job-manual-1
 
 ### 6. Reach ntfy from your phone
 
-In-cluster, ntfy is only reachable at
-`http://ntfy.go-get-a-job.svc.cluster.local` (see `deploy/ntfy-service.yaml`).
-For real push notifications away from your home network, route a hostname
-to that Service through whatever reverse-proxy + dynamic-DNS setup you
-already use for your other personal sites, update `base-url` in
-`deploy/ntfy-configmap.yaml` to match, then install the
-[ntfy app](https://ntfy.sh/#subscribe) and subscribe to your topic
-(`job-matches` by default) using the username/password from step 3.
+In-cluster, ntfy is reachable at
+`http://ntfy.go-get-a-job.svc.cluster.local` (see `deploy/ntfy-service.yaml`;
+the Service keeps `port: 80` so callers never need a port suffix, while the
+container itself listens on `8080` as an unprivileged user - `targetPort` is
+spelled out explicitly for that reason).
+
+For push notifications away from your home network, route a hostname to that
+Service through whatever reverse-proxy + dynamic-DNS setup you already use for
+your other personal sites, update `base-url` in `deploy/ntfy-configmap.yaml`
+to match, then install the [ntfy app](https://ntfy.sh/#subscribe) and
+subscribe to your topic (`job-matches` by default) using the username/password
+from step 3.
+
+**Be aware that this makes the ntfy server internet-facing.** Its own
+`deny-all` auth is then the only thing between the open internet and your
+notification store, which is why step 3 creates a least-privilege user and why
+`deploy/ntfy-deployment.yaml` runs non-root on a pinned image. If your phone
+can reach the cluster over a VPN or your LAN, prefer that over a public
+hostname - nothing in this repo requires ntfy to be publicly reachable.
 
 ## Configuring what it watches
 
@@ -216,6 +305,250 @@ sources:
 - `ai.profile`: free text describing what you're looking for - this is
   what the model actually judges postings against, so this is the main
   lever for changing what counts as a match.
+
+## Security
+
+This is a self-hosted watcher that runs unattended in a home cluster, talks to
+three kinds of untrusted third party, and holds two credentials. This section
+is the reasoning behind the hardening in `deploy/`, `internal/`, and `.github/`
+- written down because most of it is invisible from the manifests alone, and
+because the decisions here look arbitrary until you know what they're for.
+
+### Threat model in one screen
+
+**Assets**
+
+1. `DEEPSEEK_API_KEY` and `NTFY_TOKEN` (Secret `go-get-a-job-secrets`).
+2. ntfy's `auth.db` (password hashes and access tokens) on the ntfy PVC.
+3. The integrity of the notification channel - a forged "match" is a phishing
+   vector aimed at your phone.
+4. The cluster itself: a foothold in either pod must not become a foothold
+   in the cluster or the LAN.
+
+**What is trusted, and what is not**
+
+| Input | Trust |
+|---|---|
+| Secret values (env only, never on disk) | trusted |
+| `deploy/configmap.yaml` | semi-trusted - GitOps-managed, but see "ConfigMap edits" below |
+| Job postings from the ATS APIs (titles, descriptions, IDs, URLs) | **untrusted** - anyone can publish a job posting |
+| The AI provider's response (`score`, `reason`, `signals`) | **untrusted** |
+| Pod network | no longer assumed trusted - see the NetworkPolicy |
+
+**Secrets never touch this repo.** `deploy/secret.example.yaml` was removed
+deliberately; the Secret is created with `kubectl create secret` (step 4) so no
+secret material is written to disk, committed to Git, or passed through any
+tool. `internal/config` only ever logs an env-var *name*, never its value.
+
+### ConfigMap edits can steal your secrets
+
+`ai.baseURL`, `notify.ntfy.url`, and `sources[].host` all come from a
+ConfigMap, while `DEEPSEEK_API_KEY` and `NTFY_TOKEN` are injected as env vars
+into the same pod. Anyone who can `update` that ConfigMap - but who cannot read
+the Secret - can point `ai.baseURL` at a host they control and receive the API
+key in an `Authorization` header on the next scheduled run. This is the
+single most realistic attack path against this deployment, and it is why:
+
+- `internal/config` validates those fields at startup: `https://` only for
+  remote hosts, no userinfo, no query string, no fragment, a bare-hostname
+  regex for `sources[].host`, and a slug charset for company/board/tenant/site
+  values. A typo fails the run loudly instead of silently sending a token
+  somewhere new. The one exception is deliberate: plain `http://` is allowed
+  for `*.svc`, `*.svc.cluster.local`, `*.cluster.local`, `localhost`, and
+  loopback IPs, because the in-cluster ntfy hop is plain HTTP by design.
+- `deploy/networkpolicy.yaml` bounds where an edited URL could actually reach
+  (`443` only, no arbitrary ports).
+- **You should lock down who can edit the ConfigMap.** With one operator this
+  is mostly theoretical, but if more than one person (or a CI system) has
+  namespace access, add standard RBAC so that writing the ConfigMap requires
+  at least as much trust as reading the Secret:
+
+  ```shell
+  kubectl -n go-get-a-job get rolebindings,clusterrolebindings -o wide
+  ```
+
+  The practical rule: **anyone who can edit the ConfigMap can exfiltrate the
+  secrets**, so treat the two permissions as equivalent when granting access.
+
+Note the AI provider is a third party: `ai.profile` (your own text) and the
+full job description are sent to it. That is a data-sharing decision, not a
+vulnerability - but if the postings you watch contain anything you'd rather
+not send to an external service, run without `ai:` configured (the keyword
+filter still works) or point `ai.baseURL` at a self-hosted
+OpenAI-compatible endpoint.
+
+### NetworkPolicy
+
+`deploy/networkpolicy.yaml` is a default-deny with four narrow allows: the
+CronJob may reach DNS, `443` to the internet, and ntfy in-namespace; ntfy may
+reach DNS and may be reached by the CronJob and by the reverse proxy in front
+of it. **This is fail-open**: if the CNI doesn't enforce NetworkPolicy, the
+objects apply cleanly and do nothing. Verify it engages, and treat a
+trivially-passing negative test as a finding rather than a success:
+
+```shell
+# 1. Is a policy-capable CNI actually running?
+kubectl get pods -A | grep -iE 'cilium|calico|flannel|kube-router'
+#    (k3s ships kube-router's policy controller, so this should be non-empty)
+
+# 2. Positive: the happy path still works.
+kubectl -n go-get-a-job create job --from=cronjob/go-get-a-job manual-1
+kubectl -n go-get-a-job logs -f job/manual-1
+
+# 3. Negative: a pod in this namespace must NOT reach something unrelated.
+kubectl -n go-get-a-job run netpol-probe --rm -it --restart=Never \
+  --image=busybox:1.36 -- wget -T5 -qO- http://kubernetes.default.svc.cluster.local/healthz
+#    Expect a timeout / connection failure. If it *succeeds*, the CNI is not
+#    enforcing and you should not treat this file as a control.
+```
+
+Two ordering notes:
+
+- **In-cluster ntfy stays on `port: 80`** while the container listens on
+  `8080`, and both ports are allowed in the policy. That is deliberate: the
+  Service's `targetPort` is spelled out rather than defaulted, and the extra
+  port covers CNIs that evaluate policy before service DNAT. If your CNI
+  evaluates egress *before* DNAT, you'll also need to add your service CIDR as
+  an `ipBlock` (k3s default `10.43.0.0/16`) - the comment in the file has the
+  command to confirm yours.
+- **The reverse proxy is in a different namespace.** A same-namespace-only
+  ingress rule breaks the public hostname while everything in this repo still
+  looks healthy. The policy matches `kubernetes.io/metadata.name: web`; change
+  that label if your proxy lives elsewhere.
+
+FQDN-based egress allowlisting would be a real tightening here, but it needs
+Cilium. The file notes where to swap it in if you run Cilium; without it,
+egress is scoped by port, so a ConfigMap-edited `ai.baseURL` could still reach
+an attacker's own HTTPS endpoint. That case is handled by the startup
+validation above, not by the policy.
+
+### Pod Security Admission
+
+`deploy/namespace.yaml` sets `pod-security.kubernetes.io/enforce: restricted`
+(plus `audit`/`warn`). Before that label existed the namespace had no policy at
+all, meaning the default `privileged` applied and a root container would have
+been admitted without comment - which is exactly what the bundled ntfy server
+used to be.
+
+Both pods in the namespace satisfy `restricted`: non-root with an explicit
+UID/GID, all capabilities dropped, `allowPrivilegeEscalation: false`,
+`RuntimeDefault` seccomp, read-only root filesystem. Verify the label actually
+enforces (a typo'd label enforces nothing, silently):
+
+```shell
+kubectl -n go-get-a-job run psa-probe --restart=Never --image=busybox:1.36 \
+  --overrides='{"spec":{"containers":[{"name":"psa-probe","image":"busybox:1.36","securityContext":{"privileged":true}}]}}' -- sleep 1
+#    Expect: a Forbidden error mentioning "violates PodSecurity ... restricted".
+#    If it is admitted, the label is not on this namespace.
+```
+
+**Apply order matters.** The PSA label must land *after* the hardened
+workloads are confirmed running, or it rejects the still-root pod and the
+namespace goes red on the next sync. If a future workload genuinely cannot meet
+`restricted`, downgrade `enforce` to `baseline` and keep `warn`/`audit` on
+`restricted` - that surfaces the drift on every sync without blocking it. The
+label is a one-line revert.
+
+### The ntfy hop is plain HTTP inside the cluster, HTTPS outside it
+
+The CronJob publishes to `http://ntfy.go-get-a-job.svc.cluster.local`, so
+`NTFY_TOKEN` crosses the pod network unencrypted. That is a deliberate
+decision, not an oversight:
+
+- The Service is `ClusterIP` and the traffic never leaves the cluster's pod
+  network.
+- The NetworkPolicy restricts who can be on the other end of that hop to the
+  ntfy pod.
+- Terminating TLS there would mean plumbing a certificate for an internal
+  hostname, for a hop that is already both private and scoped.
+
+The asymmetry is real and worth stating: **the external hop (your phone, or
+Caddy in front of ntfy) is HTTPS; the internal hop is not.** If you want the
+internal hop encrypted too, serve ntfy with `listen-https` and point
+`notify.ntfy.url` at `https://...` - the config validation already accepts it.
+
+### Untrusted input handling
+
+Defense in depth; none of these were exploitable bugs, and the reviews that
+preceded them found no injection, SSRF, or panic vectors.
+
+- **Response bodies are capped** (`internal/httpbody`) on every ATS call, the
+  AI call, and ntfy error reads. Timeouts bound duration, not memory.
+- **URLs are built with escaping, not `fmt.Sprintf`** (`internal/sources`), so
+  a hostile board token or path can alter a path but never the origin, the
+  query, or the scheme.
+- **Text is sanitized before it reaches a log or an HTTP header**
+  (`internal/sanitize`). A newline in a job title would otherwise forge extra
+  structured-log records or break the notification; an ANSI/OSC escape would
+  rewrite your terminal when you tail the logs by hand.
+- **The ntfy `Click` header only accepts absolute `http`/`https`.** `Click` is
+  a tap target in the phone app, and `Job.URL` comes straight from third-party
+  data - a `javascript:` or `data:` URL would otherwise be offered to you as
+  one.
+- **Job postings are fenced in the LLM prompt.** Posting text is
+  attacker-controlled (anyone can publish a posting), so it is wrapped in
+  `<<<JOB_POSTING_BEGIN>>>` / `<<<JOB_POSTING_END>>>` markers, the system
+  prompt states that only the system message carries instructions, and any
+  fence-shaped text *inside* the posting is stripped so the boundary cannot be
+  forged. `reason` length and `signals` count are capped after parsing, so a
+  hostile response can't flood the log or the notification. Prompt injection
+  here can at worst skew one score - the model has no tools and its output is
+  only ever logged, stored, and sent to you.
+- **The SQLite database is created `0600` in a `0700` directory**, and its
+  schema is applied with a context so a cancelled run doesn't block.
+
+### Supply chain
+
+- **All GitHub Actions are pinned to full commit SHAs** with the version in a
+  trailing comment, and every workflow sets an explicit least-privilege
+  `permissions:` block. `softprops/action-gh-release` runs in a
+  `contents: write` job, so a moved community tag there would be a
+  write-capable token against this repo.
+- **Both Dockerfile stages are pinned by digest**, as is the runtime ntfy
+  image.
+- **Dependabot** (`.github/dependabot.yml`) proposes weekly bumps for Go
+  modules, the actions above, and Docker base images, grouped into single
+  reviewable PRs. A bump shows up as a diff you can read instead of arriving
+  silently at 06:00.
+- **`security.yml`** runs `govulncheck` and `golangci-lint` on every push and
+  PR, plus weekly against an unchanged tree (new vulnerabilities are published
+  against code that already exists).
+
+Run the same checks locally - the versions are pinned in the `Makefile` so CI
+and your machine agree:
+
+```shell
+make lint       # golangci-lint, incl. gosec/bodyclose/errorlint/noctx
+make vuln       # govulncheck
+make test-race  # go test ./... -race
+```
+
+### Reporting a problem
+
+This is a personal project with no security team behind it. If you find
+something, open an issue - or if it's sensitive, use GitHub's private
+vulnerability reporting on this repository rather than a public issue.
+
+### Known gaps / follow-ups
+
+Deliberately left out of this hardening pass, so they aren't lost:
+
+- **Image signing.** Digests are pinned, but nothing verifies *who* built the
+  image. Cosign + an admission policy (Kyverno/Connaisseur) would close that;
+  both are cluster-wide concerns rather than something this repo can arrange
+  on its own.
+- **FQDN-based egress allowlisting.** Needs Cilium. Without it, egress is
+  scoped by port only - see the NetworkPolicy section.
+- **Encrypting the in-cluster ntfy hop.** A documented decision, not an
+  oversight; see above.
+- **Anything in front of ntfy.** If you publish it through a reverse proxy,
+  that proxy is part of this deployment's attack surface and should be at
+  least as hardened as these manifests (its own `securityContext`, a pinned
+  image, TLS termination). It isn't managed here because it isn't this repo.
+- **Narrowing ntfy's public exposure.** If ntfy is only ever reached from your
+  phone over a VPN or LAN, restricting the public route to LAN source IPs - or
+  dropping the public route entirely - removes a whole class of risk at
+  essentially no cost to this app.
 
 ## Not covered (by design, for now)
 

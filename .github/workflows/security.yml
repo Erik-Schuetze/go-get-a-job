@@ -1,0 +1,63 @@
+name: Security
+
+# Runs on every push and PR so a newly-added dependency or a changed line
+# is checked immediately, plus weekly so that a vulnerability disclosed
+# against code that hasn't moved still gets caught. Neither check needs any
+# secret or write access, which is why this workflow's permissions are the
+# read-only default.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  schedule:
+    # Mondays at 06:27 UTC - off the hour, so it doesn't queue behind the
+    # cron jobs every other repository schedules at :00.
+    - cron: '27 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      # govulncheck reports only vulnerabilities that this binary actually
+      # reaches, which is what makes it usable as a gate: an advisory in an
+      # unused code path is not a reason to block a release. It fails the
+      # job on a reachable finding.
+      - name: Run govulncheck
+        run: make vuln
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      # Deliberately not the golangci-lint-action: `make lint` pins the
+      # linter by version and is the same command a developer runs locally,
+      # so CI and local results can't diverge. It also means one fewer
+      # third-party action in the trust boundary.
+      - name: Run golangci-lint
+        run: make lint

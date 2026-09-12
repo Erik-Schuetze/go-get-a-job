@@ -6,6 +6,13 @@
 # auth-default-access "deny-all" means nobody can publish or subscribe
 # until a user/token exists - see README for the one-time setup command
 # (`ntfy user add` / `ntfy token add`, run once via kubectl exec).
+#
+# listen-http is deliberately a high port (8080), not :80: the container runs
+# as an unprivileged user (see ntfy-deployment.yaml), and binding a port below
+# 1024 requires CAP_NET_BIND_SERVICE - which is dropped. The Service keeps
+# port 80 so in-cluster callers (the CronJob, and the reverse proxy in front of
+# ntfy) don't need to change; only the Service's targetPort moved. If you do
+# change this port, update targetPort in ntfy-service.yaml to match.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -14,7 +21,7 @@ metadata:
 data:
   server.yml: |
     base-url: "http://ntfy.go-get-a-job.svc.cluster.local"
-    listen-http: ":80"
+    listen-http: ":8080"
     cache-file: "/var/lib/ntfy/cache.db"
     auth-file: "/var/lib/ntfy/auth.db"
     auth-default-access: "deny-all"

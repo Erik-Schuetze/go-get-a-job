@@ -8,13 +8,20 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # contents: write is the one thing this job needs, because it creates a
+    # release. It is also why every action in the job is pinned to a full
+    # commit SHA: a mutable tag here would hand a write-capable token to
+    # whatever code that tag happened to point at.
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           generate_release_notes: true
           draft: false

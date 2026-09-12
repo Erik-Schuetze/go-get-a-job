@@ -7,7 +7,11 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
+	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -124,7 +128,9 @@ type StoreConfig struct {
 
 // Load reads, parses, defaults, and validates the config file at path.
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	// The path comes from the operator-supplied --config flag, not from
+	// untrusted input.
+	data, err := os.ReadFile(path) //nolint:gosec // G304: operator-configured path
 	if err != nil {
 		return nil, fmt.Errorf("reading config file %q: %w", path, err)
 	}
@@ -164,6 +170,75 @@ func (c *Config) applyDefaults() {
 	}
 }
 
+// Charset rules for values that are interpolated into a request path. A
+// slash, question mark, or space here would let a config value - which is
+// only semi-trusted, since it lives in a ConfigMap anyone with namespace
+// write access can edit - redefine which endpoint the request goes to on
+// an otherwise fixed origin. Rejecting them at startup turns a silent
+// misdirection into a failed sync.
+var (
+	slugRE  = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	hostRE  = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$`)
+	envRE   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	topicRE = regexp.MustCompile(`^[-_A-Za-z0-9]{1,64}$`)
+)
+
+// inClusterHosts are hostnames allowed to be reached over plain http. The
+// ntfy Service is published as http://ntfy.<ns>.svc.cluster.local and the
+// hop never leaves the pod network, so requiring https there would be
+// wrong; everything else must be encrypted, because the bearer token sent
+// with each publish would otherwise be readable in transit.
+var inClusterHosts = []string{".svc.cluster.local", ".svc", ".cluster.local"}
+
+func isInClusterHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	lower := strings.ToLower(host)
+	for _, suffix := range inClusterHosts {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// validateServiceURL checks that an operator-supplied base URL is an
+// absolute, unambiguous HTTP(S) endpoint. allowHTTP relaxes the scheme
+// requirement for in-cluster hosts only.
+//
+// userinfo is rejected outright: Go sends it as a basic-auth header, which
+// means a URL typed into a ConfigMap could carry credentials - or, worse,
+// silently override the real bearer token on the request.
+func validateServiceURL(field, raw string, allowHTTP bool) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%s: %q is not a valid URL: %w", field, raw, err)
+	}
+	switch u.Scheme {
+	case "https":
+	case "http":
+		if !allowHTTP || !isInClusterHost(u.Hostname()) {
+			return fmt.Errorf("%s: %q must use https (plain http is only allowed for in-cluster or loopback hosts)", field, raw)
+		}
+	default:
+		return fmt.Errorf("%s: %q must use https, got scheme %q", field, raw, u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%s: %q has no host", field, raw)
+	}
+	if u.User != nil {
+		return fmt.Errorf("%s: %q must not contain a username or password", field, raw)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("%s: %q must not contain a query string or fragment", field, raw)
+	}
+	return nil
+}
+
 var validSourceTypes = map[string]bool{
 	"greenhouse":      true,
 	"lever":           true,
@@ -197,8 +272,22 @@ func (c *Config) Validate() error {
 			if s.Tenant == "" || s.Host == "" || s.Site == "" {
 				return fmt.Errorf("sources[%d] (%s): workday sources require tenant, host, and site", i, name)
 			}
-		} else if s.Company == "" {
-			return fmt.Errorf("sources[%d] (%s): company is required for %s sources", i, name, s.Type)
+			if !slugRE.MatchString(s.Tenant) {
+				return fmt.Errorf("sources[%d] (%s): tenant %q must match %s", i, name, s.Tenant, slugRE)
+			}
+			if !slugRE.MatchString(s.Site) {
+				return fmt.Errorf("sources[%d] (%s): site %q must match %s", i, name, s.Site, slugRE)
+			}
+			if !hostRE.MatchString(s.Host) {
+				return fmt.Errorf("sources[%d] (%s): host %q must be a bare hostname (no scheme, port, path, or whitespace), matching %s", i, name, s.Host, hostRE)
+			}
+		} else {
+			if s.Company == "" {
+				return fmt.Errorf("sources[%d] (%s): company is required for %s sources", i, name, s.Type)
+			}
+			if !slugRE.MatchString(s.Company) {
+				return fmt.Errorf("sources[%d] (%s): company %q must match %s", i, name, s.Company, slugRE)
+			}
 		}
 	}
 
@@ -209,11 +298,26 @@ func (c *Config) Validate() error {
 	if c.AI.APIKeyEnv == "" {
 		return fmt.Errorf("ai.apiKeyEnv is required (name of the environment variable holding the API key)")
 	}
+	if !envRE.MatchString(c.AI.APIKeyEnv) {
+		return fmt.Errorf("ai.apiKeyEnv: %q is not a valid environment variable name", c.AI.APIKeyEnv)
+	}
+	if err := validateServiceURL("ai.baseURL", c.AI.BaseURL, false); err != nil {
+		return err
+	}
 
 	switch c.Notify.Type {
 	case "ntfy":
 		if c.Notify.Ntfy.URL == "" || c.Notify.Ntfy.Topic == "" {
 			return fmt.Errorf("notify.ntfy.url and notify.ntfy.topic are required when notify.type is ntfy")
+		}
+		if err := validateServiceURL("notify.ntfy.url", c.Notify.Ntfy.URL, true); err != nil {
+			return err
+		}
+		if !topicRE.MatchString(c.Notify.Ntfy.Topic) {
+			return fmt.Errorf("notify.ntfy.topic: %q must match %s (ntfy topics are 1-64 characters of A-Z, a-z, 0-9, -, _)", c.Notify.Ntfy.Topic, topicRE)
+		}
+		if c.Notify.Ntfy.TokenEnv != "" && !envRE.MatchString(c.Notify.Ntfy.TokenEnv) {
+			return fmt.Errorf("notify.ntfy.tokenEnv: %q is not a valid environment variable name", c.Notify.Ntfy.TokenEnv)
 		}
 	default:
 		return fmt.Errorf("notify.type: unknown or unsupported type %q", c.Notify.Type)

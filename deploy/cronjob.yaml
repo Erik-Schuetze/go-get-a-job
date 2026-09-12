@@ -22,8 +22,18 @@ spec:
       # employers.
       activeDeadlineSeconds: 1800
       template:
+        metadata:
+          # Also selected by the NetworkPolicy in networkpolicy.yaml, so this
+          # label is load-bearing: removing or renaming it stops the CronJob
+          # from reaching ntfy (and the internet).
+          labels:
+            app: go-get-a-job
         spec:
           restartPolicy: Never
+          # Nothing here talks to the Kubernetes API server, so don't project
+          # a service account token into a container that handles untrusted
+          # third-party data.
+          automountServiceAccountToken: false
           # Matches the distroless "nonroot" base image's fixed UID/GID.
           # fsGroup is required so the mounted PVC is actually writable by
           # that UID - without it, SQLite can't create its database file
@@ -33,15 +43,19 @@ spec:
             runAsUser: 65532
             runAsGroup: 65532
             fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
           containers:
             - name: go-get-a-job
-              # Published by .github/workflows/docker-build.yml on every
-              # push to main. imagePullPolicy is explicit (rather than
-              # relying on the implicit "Always" default Kubernetes uses
-              # for the ":latest" tag) so this stays correct even if the
-              # tag is ever pinned to something else later.
-              image: ghcr.io/erik-schuetze/go-get-a-job:latest
-              imagePullPolicy: Always
+              # Pinned to a release tag *and* a digest so a scheduled run
+              # always executes exactly the reviewed image rather than
+              # whatever happens to be newest in the registry. The tag
+              # mirrors the git tag (see .github/workflows/docker-build.yml);
+              # bump both values deliberately when cutting a release (see
+              # README) - the old digest is the rollback. v0.1.0 is the one
+              # release published before that convention, as "0.1.0".
+              image: ghcr.io/erik-schuetze/go-get-a-job:0.1.0@sha256:d1fff42c2a01492973234af251402b9e35399cfe48c723e0d3d1601a727b49af
+              imagePullPolicy: IfNotPresent
               args: ["--config", "/etc/go-get-a-job/config.yaml"]
               envFrom:
                 - secretRef:

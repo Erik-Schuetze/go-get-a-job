@@ -4,6 +4,15 @@
 # notifications away from home, route a hostname to this Service through
 # your existing reverse-proxy setup (no change needed here to support that
 # - just point your proxy's backend at this Service).
+#
+# port stays 80 on purpose so callers keep using the familiar
+# "http://ntfy.go-get-a-job.svc.cluster.local" form with no port suffix: the
+# CronJob's config and any external reverse-proxy backend both hardcode :80.
+# targetPort is therefore spelled out explicitly rather than left to the
+# Service's default of "same as port" - the container listens on 8080
+# (unprivileged), and an implicit targetPort here would silently point
+# endpoints at a port nothing is listening on, breaking the public hostname
+# with no error anywhere in this repo.
 apiVersion: v1
 kind: Service
 metadata:
@@ -15,4 +24,4 @@ spec:
   ports:
     - name: http
       port: 80
-      targetPort: http
+      targetPort: 8080

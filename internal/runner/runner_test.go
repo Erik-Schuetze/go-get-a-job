@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -342,5 +344,133 @@ func TestRunner_Run_NotifyErrorIsolated(t *testing.T) {
 	}
 	if rec.NotifiedAt != nil {
 		t.Error("expected NotifiedAt to remain nil after a failed notify")
+	}
+}
+
+// --- log hygiene -----------------------------------------------------
+
+// recordingHandler captures each record's attributes as raw Go values, before
+// any encoder escapes them. That matters here: a text handler would render a
+// newline as the two-character sequence \n and hide the very thing under
+// test, so the assertions have to run against the value the runner passed.
+type recordingHandler struct {
+	mu      sync.Mutex
+	records []recordedRecord
+}
+
+type recordedRecord struct {
+	message string
+	attrs   map[string]any
+}
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
+	rec := recordedRecord{message: r.Message, attrs: map[string]any{}}
+	r.Attrs(func(a slog.Attr) bool {
+		rec.attrs[a.Key] = a.Value.Any()
+		return true
+	})
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, rec)
+	return nil
+}
+
+func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *recordingHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *recordingHandler) stringAttrs() map[string]string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := map[string]string{}
+	for _, rec := range h.records {
+		for k, v := range rec.attrs {
+			if s, ok := v.(string); ok {
+				out[rec.message+"."+k] = s
+			}
+		}
+	}
+	return out
+}
+
+// The source name, the error string, and the job ID/title all originate
+// outside this program: the source name from config, and the rest from a
+// third-party response. A newline among them would let a hostile posting
+// forge extra structured-log records, and a terminal escape would let it
+// rewrite the operator's terminal when the logs are tailed by hand.
+func TestRunner_Run_SanitizesUntrustedLogAttributes(t *testing.T) {
+	hostileErr := errors.New("boom\x1b]0;pwned\x07\nlevel=ERROR msg=forged")
+	job := model.Job{
+		ID:    "job-1\nlevel=ERROR msg=forged",
+		Title: "Engineer\x1b[31m\r\nContent-Length: 0",
+	}
+
+	handler := &recordingHandler{}
+	scorer := newFakeScorer()
+	scorer.errIDs["job-1\nlevel=ERROR msg=forged"] = hostileErr
+
+	r := &Runner{
+		Sources: []sources.Source{
+			&fakeSource{name: "greenhouse\nlevel=ERROR msg=forged", err: hostileErr},
+			&fakeSource{name: "lever", jobs: []model.Job{job}},
+		},
+		Filter:   config.FilterConfig{MinAIScore: 0.7},
+		Profile:  "profile",
+		Scorer:   scorer,
+		Store:    newFakeStore(),
+		Notifier: &fakeNotifier{},
+		Logger:   slog.New(handler),
+	}
+
+	r.Run(context.Background())
+
+	attrs := handler.stringAttrs()
+	if len(attrs) == 0 {
+		t.Fatal("expected the runner to log at least one record with attributes")
+	}
+
+	for name, value := range attrs {
+		if strings.ContainsAny(value, "\n\r\x1b\x07\x00") {
+			t.Errorf("log attribute %s = %q still contains control characters", name, value)
+		}
+	}
+
+	// The readable part must survive: sanitizing is not allowed to blank the
+	// value, or the log stops being useful for diagnosis.
+	if got := attrs["source fetch failed.source"]; !strings.Contains(got, "greenhouse") {
+		t.Errorf("expected the source name to remain readable, got %q", got)
+	}
+	if got := attrs["processing job failed.title"]; !strings.Contains(got, "Engineer") {
+		t.Errorf("expected the job title to remain readable, got %q", got)
+	}
+	if got := attrs["source fetch failed.error"]; !strings.Contains(got, "boom") {
+		t.Errorf("expected the source error to remain readable, got %q", got)
+	}
+}
+
+func TestRunner_Run_CapsUntrustedLogAttributeLength(t *testing.T) {
+	job := model.Job{ID: strings.Repeat("i", 2000), Title: strings.Repeat("t", 2000)}
+
+	handler := &recordingHandler{}
+	scorer := newFakeScorer()
+	scorer.errIDs[strings.Repeat("i", 2000)] = errors.New("nope")
+
+	r := &Runner{
+		Sources:  []sources.Source{&fakeSource{name: "greenhouse", jobs: []model.Job{job}}},
+		Filter:   config.FilterConfig{MinAIScore: 0.7},
+		Scorer:   scorer,
+		Store:    newFakeStore(),
+		Notifier: &fakeNotifier{},
+		Logger:   slog.New(handler),
+	}
+
+	r.Run(context.Background())
+
+	attrs := handler.stringAttrs()
+	for name, value := range attrs {
+		if len([]rune(value)) > 600 {
+			t.Errorf("log attribute %s is %d runes, expected it to be capped", name, len([]rune(value)))
+		}
 	}
 }

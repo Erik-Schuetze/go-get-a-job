@@ -2,10 +2,10 @@ package sources
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 
+	"github.com/Erik-Schuetze/go-get-a-job/internal/httpbody"
 	"github.com/Erik-Schuetze/go-get-a-job/internal/model"
 )
 
@@ -20,18 +20,20 @@ type Lever struct {
 	Company     string
 	DisplayName string
 
-	BaseURL    string
-	HTTPClient *http.Client
+	BaseURL          string
+	HTTPClient       *http.Client
+	MaxResponseBytes int64
 }
 
 // NewLever builds a Lever source for the given company slug and
 // human-readable display name.
 func NewLever(company, displayName string) *Lever {
 	return &Lever{
-		Company:     company,
-		DisplayName: displayName,
-		BaseURL:     leverDefaultBaseURL,
-		HTTPClient:  defaultHTTPClient(),
+		Company:          company,
+		DisplayName:      displayName,
+		BaseURL:          leverDefaultBaseURL,
+		HTTPClient:       defaultHTTPClient(),
+		MaxResponseBytes: httpbody.MaxAPIBytes,
 	}
 }
 
@@ -52,7 +54,10 @@ type leverCategories struct {
 
 // Fetch retrieves every open posting on this company's Lever board.
 func (l *Lever) Fetch(ctx context.Context) ([]model.Job, error) {
-	url := fmt.Sprintf("%s/%s?mode=json", l.BaseURL, l.Company)
+	url, err := buildURL(l.BaseURL, "mode=json", l.Company)
+	if err != nil {
+		return nil, fmt.Errorf("lever(%s): %w", l.Company, err)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -63,15 +68,15 @@ func (l *Lever) Fetch(ctx context.Context) ([]model.Job, error) {
 	if err != nil {
 		return nil, fmt.Errorf("lever(%s): request failed: %w", l.Company, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("lever(%s): unexpected status %d", l.Company, resp.StatusCode)
 	}
 
 	var postings []leverPosting
-	if err := json.NewDecoder(resp.Body).Decode(&postings); err != nil {
-		return nil, fmt.Errorf("lever(%s): decoding response: %w", l.Company, err)
+	if err := httpbody.DecodeJSON(resp.Body, l.MaxResponseBytes, &postings); err != nil {
+		return nil, fmt.Errorf("lever(%s): reading response: %w", l.Company, err)
 	}
 
 	jobs := make([]model.Job, 0, len(postings))
