@@ -1,0 +1,56 @@
+version: "2"
+
+linters:
+  # The standard set (errcheck, govet, ineffassign, staticcheck, unused)
+  # matches the ruleset used in the sibling hetzner-ddns project, so the two
+  # stay consistent.
+  default: standard
+  enable:
+    # Mirrors govulncheck's job one level down: catches the call patterns
+    # that are insecure regardless of which dependency versions are in use.
+    - gosec
+    # A response body that is never closed leaks the underlying connection.
+    - bodyclose
+    # Catches %w/%v slips in error wrapping, which silently break
+    # errors.Is/As for callers.
+    - errorlint
+    # Flags http.NewRequest where a *WithContext variant exists, so a
+    # request can't outlive the run's context.
+    - noctx
+    - unconvert
+
+  settings:
+    gosec:
+      excludes:
+        # math/rand is only ever used for non-security purposes here
+        # (shuffling/backoff). Nothing in this pipeline derives a key, a
+        # token, or an identifier from it.
+        - G404
+    errorlint:
+      # The pipeline wraps errors with %w throughout; treat any %v on an
+      # error value as a mistake rather than allowing it.
+      errorf: true
+
+  exclusions:
+    generated: lax
+    rules:
+      # Test files routinely ignore errors on cleanup calls and use
+      # hardcoded credentials for httptest servers.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - noctx
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/Erik-Schuetze/go-get-a-job

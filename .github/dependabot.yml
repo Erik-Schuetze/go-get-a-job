@@ -1,0 +1,53 @@
+version: 2
+
+updates:
+  # Go module dependencies (gopkg.in/yaml.v3, modernc.org/sqlite, ...).
+  # This is the ecosystem most likely to produce a security advisory that
+  # affects this codebase, so it gets the most frequent check.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      # One PR for the routine bumps instead of a dozen; a security update
+      # still opens on its own because Dependabot bypasses groups for
+      # advisories.
+      go-modules:
+        patterns:
+          - "*"
+
+  # GitHub Actions in .github/workflows. Actions are pinned to full commit
+  # SHAs (see the workflows themselves for why); this is what keeps those
+  # pins from going stale, and it rewrites both the SHA and the trailing
+  # "# vX.Y.Z" comment.
+  - package-ecosystem: github-actions
+    directory: /.github/workflows
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # Base images in the Dockerfile. Both stages are pinned by digest, and
+  # this is what proposes the next one - which is the point of pinning:
+  # the bump arrives as a reviewable diff instead of happening silently.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "chore(docker)"
+    ignore:
+      # The final stage is distroless; a major Debian bump changes the
+      # base entirely and is worth doing deliberately rather than weekly.
+      - dependency-name: "gcr.io/distroless/static-debian12"
+        update-types: ["version-update:semver-major"]

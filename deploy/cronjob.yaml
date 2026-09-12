@@ -47,13 +47,13 @@ spec:
               type: RuntimeDefault
           containers:
             - name: go-get-a-job
-              # Published by .github/workflows/docker-build.yml on every
-              # push to main. imagePullPolicy is explicit (rather than
-              # relying on the implicit "Always" default Kubernetes uses
-              # for the ":latest" tag) so this stays correct even if the
-              # tag is ever pinned to something else later.
-              image: ghcr.io/erik-schuetze/go-get-a-job:latest
-              imagePullPolicy: Always
+              # Pinned to a release tag *and* a digest so a scheduled run
+              # always executes exactly the reviewed image rather than
+              # whatever happens to be newest in the registry. Bump this
+              # deliberately when cutting a release (see README) - the old
+              # digest is the rollback.
+              image: ghcr.io/erik-schuetze/go-get-a-job:0.1.0@sha256:d1fff42c2a01492973234af251402b9e35399cfe48c723e0d3d1601a727b49af
+              imagePullPolicy: IfNotPresent
               args: ["--config", "/etc/go-get-a-job/config.yaml"]
               envFrom:
                 - secretRef:
