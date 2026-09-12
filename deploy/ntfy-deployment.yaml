@@ -1,8 +1,14 @@
-# Self-hosted ntfy server, in-cluster only by default (ClusterIP - see
-# ntfy-service.yaml). To receive push notifications away from your home
-# network, add a hostname for this Service to your existing reverse-proxy
-# setup and update base-url in ntfy-configmap.yaml accordingly; nothing
-# here needs to change to support that.
+# Self-hosted ntfy server, published via a ClusterIP Service (see
+# ntfy-service.yaml). The Service is ClusterIP, but the effective exposure is
+# whatever you point at it: the reference deployment puts a reverse proxy in
+# front of it under a publicly resolvable hostname so a phone can receive push
+# notifications away from home. Treat this workload as internet-facing - it
+# runs the latest hardened settings (non-root, pinned image, no SA token) for
+# exactly that reason.
+#
+# If instead you only ever reach ntfy from inside the cluster (or via
+# `kubectl port-forward`), you can keep it entirely private and the security
+# posture only improves; nothing here depends on being publicly reachable.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,13 +28,39 @@ spec:
       labels:
         app: ntfy
     spec:
+      # Neither container in this namespace ever talks to the Kubernetes API
+      # server, so don't hand either of them a credential that could be used
+      # to do so.
+      automountServiceAccountToken: false
+      # Pod-level because runAsNonRoot/runAsUser/fsGroup and the seccomp
+      # profile are not per-container settings. UID/GID 65534 is the "nobody"
+      # user that already exists in the image's Alpine base, so nothing needs
+      # to be appended to /etc/passwd for lookups to resolve.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        # Required for the ntfy-data PVC to be writable by the UID above: on
+        # first rollout the kubelet re-owns the volume's contents (previously
+        # written by the root-running pod) to this group.
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: ntfy
-          image: binwiederhier/ntfy:latest
+          # Pinned to a release tag *and* a digest. The digest is what actually
+          # makes this immutable; the tag is there so the version is readable
+          # and Dependabot can propose a bump. This service is reachable from
+          # the public internet (via the reverse proxy), so a silently-moved
+          # upstream tag must not be able to change what runs here.
+          # The digest is the multi-arch manifest list for binwiederhier/ntfy
+          # v2.28.0, so the node still picks the right architecture.
+          image: binwiederhier/ntfy:v2.28.0@sha256:6ef4b819f722fccdc036af611c4774cfdc2de821ab74fdd48bbf4c9d6f8973da
+          imagePullPolicy: IfNotPresent
           args: ["serve"]
           ports:
             - name: http
-              containerPort: 80
+              containerPort: 8080 # see listen-http in ntfy-configmap.yaml
           volumeMounts:
             - name: config
               mountPath: /etc/ntfy

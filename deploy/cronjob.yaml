@@ -24,6 +24,10 @@ spec:
       template:
         spec:
           restartPolicy: Never
+          # Nothing here talks to the Kubernetes API server, so don't project
+          # a service account token into a container that handles untrusted
+          # third-party data.
+          automountServiceAccountToken: false
           # Matches the distroless "nonroot" base image's fixed UID/GID.
           # fsGroup is required so the mounted PVC is actually writable by
           # that UID - without it, SQLite can't create its database file
@@ -33,6 +37,8 @@ spec:
             runAsUser: 65532
             runAsGroup: 65532
             fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
           containers:
             - name: go-get-a-job
               # Published by .github/workflows/docker-build.yml on every
