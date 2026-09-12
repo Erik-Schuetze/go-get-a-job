@@ -18,14 +18,13 @@ data:
       - type: greenhouse
         company: gitlab
         displayName: "GitLab"
-      - type: greenhouse
-        company: hashicorp
-        displayName: "HashiCorp"
-      - type: workday
-        tenant: atlassian
-        host: atlassian.wd3.myworkdayjobs.com
-        site: Atlassian
-        displayName: "Atlassian"
+      # HashiCorp and Atlassian were listed here and never returned a
+      # single posting: HashiCorp's Greenhouse board has been retired (now
+      # hired through IBM's careers site, which this project can't read),
+      # and Atlassian's Workday tenant refuses anonymous API calls. Both
+      # logged one "source fetch failed" line per run and were otherwise
+      # silent. See "Verifying a board before you add it" in the README for
+      # how to check a company is actually reachable before adding it here.
 
     filter:
       keywords:
