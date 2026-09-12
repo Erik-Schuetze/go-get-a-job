@@ -201,3 +201,289 @@ func TestLoad_ExampleConfig(t *testing.T) {
 		t.Fatal("expected example config to define at least one source")
 	}
 }
+
+// baseValidConfig returns a config that passes Validate, for tests that need
+// to change exactly one field and assert on the error it produces.
+func baseValidConfig() *Config {
+	return &Config{
+		Sources: []SourceConfig{{
+			Type:        "greenhouse",
+			DisplayName: "Grafana Labs",
+			Company:     "grafanalabs",
+		}},
+		Filter: FilterConfig{MinAIScore: 0.7},
+		AI: AIConfig{
+			APIKeyEnv: "DEEPSEEK_API_KEY",
+			BaseURL:   "https://api.deepseek.com",
+			Model:     "deepseek-chat",
+			Profile:   "platform engineering",
+		},
+		Notify: NotifyConfig{
+			Type: "ntfy",
+			Ntfy: NtfyConfig{URL: "http://ntfy.go-get-a-job.svc.cluster.local", Topic: "job-matches"},
+		},
+		Store: StoreConfig{Type: "sqlite", Path: "/data/go-get-a-job.db"},
+	}
+}
+
+func TestValidate_AIBaseURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{"an https endpoint is accepted", "https://api.deepseek.com", false},
+		{"an https endpoint with a path is accepted", "https://api.deepseek.com/v1", false},
+		{"plain http is rejected - the API key travels in this request", "http://api.deepseek.com", true},
+		{"a scheme-less value is rejected", "api.deepseek.com", true},
+		{"a relative value is rejected", "/v1/chat", true},
+		{"a non-http scheme is rejected", "file:///etc/passwd", true},
+		{"credentials are rejected - they would override the bearer token", "https://user:pass@api.deepseek.com", true},
+		{"a query string is rejected", "https://api.deepseek.com?x=1", true},
+		{"a fragment is rejected", "https://api.deepseek.com#x", true},
+		{"an empty host is rejected", "https://", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.AI.BaseURL = tt.url
+
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatalf("expected ai.baseURL %q to be rejected", tt.url)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("expected ai.baseURL %q to be accepted, got %v", tt.url, err)
+			}
+		})
+	}
+}
+
+func TestValidate_NtfyURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{"https is accepted", "https://ntfy.example.com", false},
+		{"the in-cluster Service name over http is accepted", "http://ntfy.go-get-a-job.svc.cluster.local", false},
+		{"a bare .svc name over http is accepted", "http://ntfy.go-get-a-job.svc", false},
+		{"a .cluster.local name over http is accepted", "http://ntfy.default.cluster.local", false},
+		{"localhost over http is accepted", "http://localhost:8080", false},
+		{"a loopback address over http is accepted", "http://127.0.0.1:8080", false},
+		{"IPv6 loopback over http is accepted", "http://[::1]:8080", false},
+		{"plain http to a public host is rejected - the token would be readable", "http://ntfy.example.com", true},
+		{"plain http to a LAN address is rejected", "http://192.168.10.50", true},
+		{"a scheme-less value is rejected", "ntfy.example.com", true},
+		{"a non-http scheme is rejected", "ftp://ntfy.example.com", true},
+		{"credentials are rejected", "https://user:pass@ntfy.example.com", true},
+		{"a query string is rejected", "https://ntfy.example.com?x=1", true},
+		{"a fragment is rejected", "https://ntfy.example.com#x", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.Notify.Ntfy.URL = tt.url
+
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatalf("expected notify.ntfy.url %q to be rejected", tt.url)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("expected notify.ntfy.url %q to be accepted, got %v", tt.url, err)
+			}
+		})
+	}
+}
+
+func TestValidate_NtfyTopic(t *testing.T) {
+	tests := []struct {
+		name    string
+		topic   string
+		wantErr bool
+	}{
+		{"a plain topic is accepted", "job-matches", false},
+		{"underscores are accepted", "job_matches", false},
+		{"mixed case is accepted", "JobMatches", false},
+		{"digits are accepted", "job-matches-2", false},
+		{"a slash is rejected - it would address a different endpoint", "a/b", true},
+		{"a query character is rejected", "a?b", true},
+		{"a fragment character is rejected", "a#b", true},
+		{"a space is rejected", "job matches", true},
+		{"an empty topic is rejected", "", true},
+		{"a path traversal attempt is rejected", "../../admin", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.Notify.Ntfy.Topic = tt.topic
+
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatalf("expected notify.ntfy.topic %q to be rejected", tt.topic)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("expected notify.ntfy.topic %q to be accepted, got %v", tt.topic, err)
+			}
+		})
+	}
+}
+
+func TestValidate_SourceSlugs(t *testing.T) {
+	tests := []struct {
+		name    string
+		company string
+		wantErr bool
+	}{
+		{"a normal board token is accepted", "grafanalabs", false},
+		{"dot dash and underscore are accepted", "grafana-labs_co.uk", false},
+		{"a slash is rejected - it would add a path segment", "acme/../admin", true},
+		{"a query character is rejected", "acme?x=1", true},
+		{"a fragment character is rejected", "acme#x", true},
+		{"a space is rejected", "acme inc", true},
+		{"an empty slug is rejected", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.Sources[0].Company = tt.company
+
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatalf("expected company %q to be rejected", tt.company)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("expected company %q to be accepted, got %v", tt.company, err)
+			}
+		})
+	}
+}
+
+func TestValidate_WorkdayHost(t *testing.T) {
+	tests := []struct {
+		name    string
+		host    string
+		wantErr bool
+	}{
+		{"a bare hostname is accepted", "atlassian.wd3.myworkdayjobs.com", false},
+		{"a hyphenated label is accepted", "my-tenant.wd1.myworkdayjobs.com", false},
+		{"a scheme is rejected", "https://atlassian.wd3.myworkdayjobs.com", true},
+		{"a port is rejected", "atlassian.wd3.myworkdayjobs.com:8443", true},
+		{"a path is rejected", "atlassian.wd3.myworkdayjobs.com/foo", true},
+		{"a single label is rejected", "myworkdayjobs", true},
+		{"whitespace is rejected", "atlassian.wd3.myworkdayjobs.com ", true},
+		{"a newline is rejected", "atlassian.wd3.myworkdayjobs.com\nx", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.Sources[0] = SourceConfig{
+				Type:        "workday",
+				DisplayName: "Atlassian",
+				Tenant:      "atlassian",
+				Host:        tt.host,
+				Site:        "Atlassian",
+			}
+
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatalf("expected host %q to be rejected", tt.host)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("expected host %q to be accepted, got %v", tt.host, err)
+			}
+		})
+	}
+}
+
+func TestValidate_WorkdayTenantAndSite(t *testing.T) {
+	tests := []struct {
+		name    string
+		tenant  string
+		site    string
+		wantErr bool
+	}{
+		{"typical values are accepted", "atlassian", "Atlassian", false},
+		{"a slash in the tenant is rejected", "atlassian/x", "Atlassian", true},
+		{"a slash in the site is rejected", "atlassian", "Atlassian/x", true},
+		{"a query in the site is rejected", "atlassian", "Atlassian?x=1", true},
+		{"whitespace in the site is rejected", "atlassian", "Atlassian Site", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.Sources[0] = SourceConfig{
+				Type:        "workday",
+				DisplayName: "Atlassian",
+				Tenant:      tt.tenant,
+				Host:        "atlassian.wd3.myworkdayjobs.com",
+				Site:        tt.site,
+			}
+
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatalf("expected tenant %q / site %q to be rejected", tt.tenant, tt.site)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("expected tenant %q / site %q to be accepted, got %v", tt.tenant, tt.site, err)
+			}
+		})
+	}
+}
+
+func TestValidate_EnvVarNames(t *testing.T) {
+	tests := []struct {
+		name    string
+		field   string
+		wantErr bool
+	}{
+		{"DEEPSEEK_API_KEY", "ai", false},
+		{"_lower_UPPER_2", "ai", false},
+		{"2LEADING_DIGIT", "ai", true},
+		{"has-a-dash", "ai", true},
+		{"has a space", "ai", true},
+		{"NESTED", "ntfy", false},
+		{"UPPER_CASE", "ntfy", false},
+		{"lower_case", "ntfy", false},
+		{"NESTED.WITH.DOTS", "ntfy", true},
+		{"", "ntfy", false}, // tokenEnv is optional, so empty is fine
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.field+"_"+tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			if tt.field == "ai" {
+				cfg.AI.APIKeyEnv = tt.name
+			} else {
+				cfg.Notify.Ntfy.TokenEnv = tt.name
+			}
+
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatalf("expected %q to be rejected", tt.name)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("expected %q to be accepted, got %v", tt.name, err)
+			}
+		})
+	}
+}
+
+// The example config shipped in the repo must keep loading: it is the one
+// config a new operator copies, so a validation rule that rejects it would
+// be a broken first run.
+func TestLoad_ExampleConfigPassesStricterValidation(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "config", "config.example.yaml"))
+	if err != nil {
+		t.Fatalf("the shipped example config must load: %v", err)
+	}
+	if len(cfg.Sources) == 0 {
+		t.Fatal("expected the example config to define at least one source")
+	}
+}
