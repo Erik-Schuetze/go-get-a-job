@@ -49,9 +49,11 @@ spec:
             - name: go-get-a-job
               # Pinned to a release tag *and* a digest so a scheduled run
               # always executes exactly the reviewed image rather than
-              # whatever happens to be newest in the registry. Bump this
-              # deliberately when cutting a release (see README) - the old
-              # digest is the rollback.
+              # whatever happens to be newest in the registry. The tag
+              # mirrors the git tag (see .github/workflows/docker-build.yml);
+              # bump both values deliberately when cutting a release (see
+              # README) - the old digest is the rollback. v0.1.0 is the one
+              # release published before that convention, as "0.1.0".
               image: ghcr.io/erik-schuetze/go-get-a-job:0.1.0@sha256:d1fff42c2a01492973234af251402b9e35399cfe48c723e0d3d1601a727b49af
               imagePullPolicy: IfNotPresent
               args: ["--config", "/etc/go-get-a-job/config.yaml"]

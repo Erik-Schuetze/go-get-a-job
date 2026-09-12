@@ -87,9 +87,19 @@ jobs:
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Image tags follow semver and mirror the git tag exactly: tag
+          # v0.2.0 publishes v0.2.0. That matters because the manifest is the
+          # only place the version is written down, and a reviewer should be
+          # able to copy the release name into deploy/cronjob.yaml unchanged.
+          # (The default {{version}} pattern would strip the "v", producing a
+          # tag that no longer matches the release it came from.)
+          #
+          # The branch and short-SHA tags are convenience/traceability tags
+          # only - they are mutable by definition, so nothing that runs
+          # unattended may reference them.
           tags: |
             type=ref,event=branch
-            type=semver,pattern={{version}}
+            type=semver,pattern=v{{version}}
             type=sha,prefix=,suffix=,format=short
 
       - name: Build and push Docker image

@@ -105,11 +105,16 @@ else.
 
 `.github/workflows/docker-build.yml` builds and publishes the image to
 `ghcr.io/erik-schuetze/go-get-a-job` automatically on every push to `main`
-(and on `v*` tags). `deploy/cronjob.yaml` points at a **release tag plus a
-digest**, e.g.:
+(and on `v*` tags). Release image tags follow semver and mirror the git tag
+exactly, so tag `v0.2.0` publishes `v0.2.0` - the same string as the GitHub
+release and the same string you copy into the manifest. (`main` and a
+short-SHA tag are published alongside it for traceability, but both are
+mutable by definition, so nothing that runs unattended may reference them.)
+
+`deploy/cronjob.yaml` points at a **release tag plus a digest**, e.g.:
 
 ```yaml
-image: ghcr.io/erik-schuetze/go-get-a-job:0.1.0@sha256:d1fff42c...
+image: ghcr.io/erik-schuetze/go-get-a-job:v0.2.0@sha256:d1fff42c...
 imagePullPolicy: IfNotPresent
 ```
 
@@ -125,9 +130,13 @@ rollback. Both values come from the same `docker buildx imagetools
 inspect` / `docker manifest inspect` output:
 
 ```shell
-docker buildx imagetools inspect ghcr.io/erik-schuetze/go-get-a-job:0.2.0
+docker buildx imagetools inspect ghcr.io/erik-schuetze/go-get-a-job:v0.2.0
 # -> look for the top-level "Digest:" (the multi-arch manifest list)
 ```
+
+> `v0.1.0` predates that convention and was published as `0.1.0`, so it is
+> the one release whose image tag has no leading `v`. Every release from
+> `v0.2.0` on is `vX.Y.Z`.
 
 Nothing to do here at all unless you've forked this to your own GitHub
 account, in which case update the image reference in `deploy/cronjob.yaml`
