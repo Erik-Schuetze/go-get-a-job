@@ -12,6 +12,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -59,14 +60,121 @@ type FilterConfig struct {
 	// the AI scorer, at higher cost).
 	Keywords []string `yaml:"keywords"`
 
-	// Locations, if non-empty, is an OR-matched allow-list of substrings
-	// checked against a job's location string. Empty means no location
-	// filtering.
-	Locations []string `yaml:"locations"`
+	// Locations decides which postings survive the cheap location
+	// pre-filter. See LocationConfig.
+	Locations LocationConfig `yaml:"locations"`
 
 	// MinAIScore is the 0-1 threshold a job's AI relevance score must
 	// reach to trigger a notification. Defaults to 0.7.
 	MinAIScore float64 `yaml:"minAIScore"`
+}
+
+// Unmatched modes for LocationConfig.Unmatched.
+const (
+	// LocationUnmatchedReject drops a posting whose location matches
+	// neither list. This is the default: the allow list is treated as the
+	// full set of places worth considering.
+	LocationUnmatchedReject = "reject"
+
+	// LocationUnmatchedPass hands such a posting to the AI scorer instead.
+	// Useful when a posting's location field is often uninformative - a
+	// bare "Remote", say - and the profile is trusted to judge it. It costs
+	// one AI call per posting that would otherwise have been dropped.
+	LocationUnmatchedPass = "pass"
+)
+
+// Bounds on operator-supplied location lists and AI instructions. The config
+// lives in a ConfigMap, so these keep a mistaken or hostile edit from
+// turning into unbounded work or unbounded log and prompt volume.
+const (
+	maxLocationEntries    = 200
+	maxLocationEntryChars = 100
+	maxInstructionsChars  = 4000
+)
+
+// LocationConfig decides which postings survive the cheap location
+// pre-filter, by matching a posting's location string against two lists of
+// place names.
+//
+// There is deliberately no special handling of the word "remote" anywhere in
+// this pipeline: a posting located "Remote - Canada" is judged exactly like
+// one located "Toronto, Canada", because that is what the constraint really
+// is. A genuinely location-free posting ("Remote", "Worldwide") is handled by
+// listing the phrasing you accept in Allow, or by setting Unmatched to pass
+// and letting the AI scorer decide.
+type LocationConfig struct {
+	// Allow is an OR-matched list of locations that are acceptable, e.g.
+	// "Germany", "EMEA", "Remote (Global)". Matching is word-boundary aware
+	// and case-insensitive, so "US" matches "Austin, US" but not
+	// "Australia". Empty disables the allow half of the check: every
+	// location is acceptable (subject to Deny).
+	Allow []string `yaml:"allow"`
+
+	// Deny is an OR-matched list of locations that always reject, using the
+	// same matching rules as Allow. Deny wins: a posting is dropped when it
+	// matches Deny even if it also matches Allow, which is what stops
+	// "Remote - Canada" from riding in on an Allow entry of "Remote".
+	Deny []string `yaml:"deny"`
+
+	// Unmatched decides what happens to a posting that matches neither
+	// list: "reject" (default) or "pass". It has no effect while Allow is
+	// empty, since nothing can be unmatched then.
+	Unmatched string `yaml:"unmatched"`
+}
+
+// UnmarshalYAML gives the removed list form of filter.locations a useful
+// error. Without it, yaml.v3 reports "cannot unmarshal !!seq into
+// config.LocationConfig", which says nothing about what to write instead.
+func (l *LocationConfig) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.SequenceNode {
+		return fmt.Errorf("filter.locations is now a mapping with 'allow' and/or 'deny' lists: as of v0.2.0 a plain list is no longer accepted, and the entries that used to be there belong under 'allow'")
+	}
+
+	// A local alias type, so decoding does not recurse back into this
+	// method.
+	type rawLocationConfig LocationConfig
+	var raw rawLocationConfig
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	*l = LocationConfig(raw)
+	return nil
+}
+
+// validate checks the location lists and the unmatched mode. It is called by
+// Config.Validate.
+func (l LocationConfig) validate() error {
+	switch l.Unmatched {
+	case "", LocationUnmatchedReject, LocationUnmatchedPass:
+	default:
+		return fmt.Errorf("filter.locations.unmatched: %q is not one of %q or %q", l.Unmatched, LocationUnmatchedReject, LocationUnmatchedPass)
+	}
+
+	for _, list := range []struct {
+		field   string
+		entries []string
+	}{
+		{"filter.locations.allow", l.Allow},
+		{"filter.locations.deny", l.Deny},
+	} {
+		if len(list.entries) > maxLocationEntries {
+			return fmt.Errorf("%s: %d entries is more than the %d allowed", list.field, len(list.entries), maxLocationEntries)
+		}
+		for i, entry := range list.entries {
+			trimmed := strings.TrimSpace(entry)
+			if trimmed == "" {
+				return fmt.Errorf("%s[%d]: entries must not be blank", list.field, i)
+			}
+			if utf8.RuneCountInString(trimmed) < 2 {
+				return fmt.Errorf("%s[%d]: %q is too short to identify a location", list.field, i, trimmed)
+			}
+			if utf8.RuneCountInString(trimmed) > maxLocationEntryChars {
+				return fmt.Errorf("%s[%d]: entries must be at most %d characters", list.field, i, maxLocationEntryChars)
+			}
+		}
+	}
+
+	return nil
 }
 
 // AIConfig configures the relevance-scoring model call.
@@ -92,6 +200,18 @@ type AIConfig struct {
 	// sent verbatim to the model alongside each candidate job, so it can
 	// be edited at any time without any code change.
 	Profile string `yaml:"profile"`
+
+	// Instructions is operator-authored text appended to the scoring
+	// prompt, for rules the profile is a poor place for - typically hard
+	// constraints such as "a role that requires being legally based outside
+	// Germany scores 0.2 or below".
+	//
+	// This is TRUSTED OPERATOR TEXT. It is appended to the system message,
+	// where it sits alongside the output-format contract and the wording
+	// that keeps job-posting text from being read as instructions. Do not
+	// paste untrusted content here: unlike a job description, this text is
+	// not fenced off as data, so untrusted text here would be obeyed.
+	Instructions string `yaml:"instructions"`
 }
 
 // NotifyConfig selects and configures the notification channel.
@@ -152,6 +272,9 @@ func Load(path string) (*Config, error) {
 func (c *Config) applyDefaults() {
 	if c.Filter.MinAIScore == 0 {
 		c.Filter.MinAIScore = 0.7
+	}
+	if c.Filter.Locations.Unmatched == "" {
+		c.Filter.Locations.Unmatched = LocationUnmatchedReject
 	}
 	if c.AI.Provider == "" {
 		c.AI.Provider = "deepseek"
@@ -293,6 +416,14 @@ func (c *Config) Validate() error {
 
 	if c.Filter.MinAIScore < 0 || c.Filter.MinAIScore > 1 {
 		return fmt.Errorf("filter.minAIScore must be between 0 and 1, got %v", c.Filter.MinAIScore)
+	}
+
+	if err := c.Filter.Locations.validate(); err != nil {
+		return err
+	}
+
+	if n := utf8.RuneCountInString(c.AI.Instructions); n > maxInstructionsChars {
+		return fmt.Errorf("ai.instructions: %d characters is more than the %d allowed", n, maxInstructionsChars)
 	}
 
 	if c.AI.APIKeyEnv == "" {

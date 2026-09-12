@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -472,5 +473,191 @@ func TestRunner_Run_CapsUntrustedLogAttributeLength(t *testing.T) {
 		if len([]rune(value)) > 600 {
 			t.Errorf("log attribute %s is %d runes, expected it to be capped", name, len([]rune(value)))
 		}
+	}
+}
+
+// --- location pre-filter diagnostics -----------------------------------
+
+// The location pre-filter used to drop postings silently. That is how a
+// Canada-based posting got through unnoticed: nothing in the log said which
+// rule, if any, had been applied. These tests pin the diagnostic down.
+func TestRunner_Run_DeniesDeniedLocationAndReportsWhy(t *testing.T) {
+	denied := model.Job{
+		ID:       "job-ca",
+		Title:    "Platform Engineer",
+		Company:  "Acme",
+		Location: "Remote - Canada",
+	}
+
+	handler := &recordingHandler{}
+	scorer := newFakeScorer()
+	st := newFakeStore()
+	notifier := newFakeNotifier()
+
+	filterCfg := baseFilterConfig()
+	filterCfg.Locations = config.LocationConfig{
+		Allow:     []string{"Germany", "EMEA"},
+		Deny:      []string{"Canada"},
+		Unmatched: config.LocationUnmatchedReject,
+	}
+
+	r := &Runner{
+		Sources:  []sources.Source{&fakeSource{name: "fake", jobs: []model.Job{denied}}},
+		Filter:   filterCfg,
+		Profile:  "profile",
+		Scorer:   scorer,
+		Store:    st,
+		Notifier: notifier,
+		Logger:   slog.New(handler),
+	}
+
+	summary := r.Run(context.Background())
+
+	if summary.FilteredByLocation != 1 {
+		t.Errorf("expected FilteredByLocation=1, got %d", summary.FilteredByLocation)
+	}
+	if len(summary.LocationRejections) != 1 {
+		t.Fatalf("expected one recorded rejection, got %d", len(summary.LocationRejections))
+	}
+	rej := summary.LocationRejections[0]
+	if rej.Rule != "Canada" || rej.Kind != filter.LocationKindDeny {
+		t.Errorf("expected rule=Canada kind=deny, got rule=%q kind=%q", rej.Rule, rej.Kind)
+	}
+
+	// A location rejection must not cost an AI call.
+	if len(scorer.calls) != 0 {
+		t.Errorf("expected no AI calls for a denied location, got %v", scorer.calls)
+	}
+	if len(notifier.notified) != 0 {
+		t.Errorf("expected no notification, got %d", len(notifier.notified))
+	}
+
+	// The posting is still recorded as seen, so it is not re-evaluated (and
+	// re-notified) on every subsequent run.
+	if _, ok := st.records["job-ca"]; !ok {
+		t.Error("expected the location-filtered job to be persisted as seen")
+	}
+
+	attrs := handler.stringAttrs()
+	if got := attrs["location rejected.location"]; got != "Remote - Canada" {
+		t.Errorf("expected the debug log to carry the location, got %q", got)
+	}
+	if got := attrs["location rejected.rule"]; got != "Canada" {
+		t.Errorf("expected the debug log to name the deciding rule, got %q", got)
+	}
+}
+
+func TestRunner_Run_ReportsUnmatchedLocationSeparatelyFromDeny(t *testing.T) {
+	// "Remote" alone matches neither list. Under the default it is dropped,
+	// but for a different reason than a deny - and the run summary has to
+	// distinguish them, because the fixes are opposite (add an allow entry
+	// versus relax a deny entry).
+	job := model.Job{ID: "job-remote", Title: "Platform Engineer", Location: "Remote"}
+
+	scorer := newFakeScorer()
+	filterCfg := baseFilterConfig()
+	filterCfg.Locations = config.LocationConfig{
+		Allow:     []string{"Germany"},
+		Deny:      []string{"Canada"},
+		Unmatched: config.LocationUnmatchedReject,
+	}
+
+	r := &Runner{
+		Sources:  []sources.Source{&fakeSource{name: "fake", jobs: []model.Job{job}}},
+		Filter:   filterCfg,
+		Profile:  "profile",
+		Scorer:   scorer,
+		Store:    newFakeStore(),
+		Notifier: &fakeNotifier{},
+	}
+
+	summary := r.Run(context.Background())
+
+	if summary.FilteredByLocation != 1 {
+		t.Fatalf("expected FilteredByLocation=1, got %d", summary.FilteredByLocation)
+	}
+	if got := summary.LocationRejections[0].Kind; got != filter.LocationKindUnmatched {
+		t.Errorf("expected kind=%q, got %q", filter.LocationKindUnmatched, got)
+	}
+	if got := summary.LocationRejections[0].Rule; got != "" {
+		t.Errorf("expected no deciding rule for an unmatched location, got %q", got)
+	}
+}
+
+func TestRunner_Run_UnmatchedPassReachesTheScorer(t *testing.T) {
+	// The opt-in escape hatch: an ambiguous location is handed to the AI,
+	// which is where the profile's legal-location rules can judge it.
+	job := model.Job{ID: "job-remote", Title: "Platform Engineer", Location: "Remote"}
+
+	scorer := newFakeScorer()
+	scorer.scores["job-remote"] = filter.AIScore{Score: 0.9, Reason: "good fit"}
+
+	filterCfg := baseFilterConfig()
+	filterCfg.Locations = config.LocationConfig{
+		Allow:     []string{"Germany"},
+		Deny:      []string{"Canada"},
+		Unmatched: config.LocationUnmatchedPass,
+	}
+
+	notifier := newFakeNotifier()
+	r := &Runner{
+		Sources:  []sources.Source{&fakeSource{name: "fake", jobs: []model.Job{job}}},
+		Filter:   filterCfg,
+		Profile:  "profile",
+		Scorer:   scorer,
+		Store:    newFakeStore(),
+		Notifier: notifier,
+		Now:      func() time.Time { return time.Unix(1000, 0) },
+	}
+
+	summary := r.Run(context.Background())
+
+	if summary.FilteredByLocation != 0 {
+		t.Errorf("expected no location filtering, got %d", summary.FilteredByLocation)
+	}
+	if summary.Matched != 1 {
+		t.Errorf("expected the posting to be notified, got Matched=%d", summary.Matched)
+	}
+	if len(scorer.calls) != 1 {
+		t.Errorf("expected exactly one AI call, got %v", scorer.calls)
+	}
+}
+
+func TestRunner_Run_CapsReportedLocationRejections(t *testing.T) {
+	// A misconfigured allow list can reject hundreds of postings in one run.
+	// The count is unbounded, but the retained sample must not be.
+	jobs := make([]model.Job, 0, 50)
+	for i := range 50 {
+		jobs = append(jobs, model.Job{
+			ID:       "job-" + strconv.Itoa(i),
+			Title:    "Platform Engineer",
+			Location: "Toronto, Canada",
+		})
+	}
+
+	filterCfg := baseFilterConfig()
+	filterCfg.Locations = config.LocationConfig{
+		Allow:     []string{"Germany"},
+		Deny:      []string{"Canada"},
+		Unmatched: config.LocationUnmatchedReject,
+	}
+
+	r := &Runner{
+		Sources:  []sources.Source{&fakeSource{name: "fake", jobs: jobs}},
+		Filter:   filterCfg,
+		Profile:  "profile",
+		Scorer:   newFakeScorer(),
+		Store:    newFakeStore(),
+		Notifier: &fakeNotifier{},
+	}
+
+	summary := r.Run(context.Background())
+
+	if summary.FilteredByLocation != 50 {
+		t.Errorf("expected FilteredByLocation=50, got %d", summary.FilteredByLocation)
+	}
+	if len(summary.LocationRejections) != maxReportedLocationRejections {
+		t.Errorf("expected the sample to be capped at %d, got %d",
+			maxReportedLocationRejections, len(summary.LocationRejections))
 	}
 }

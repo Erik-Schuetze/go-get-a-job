@@ -1,10 +1,21 @@
 # go-get-a-job example configuration.
 #
-# Copy this file, edit it for your own companies/preferences, and mount it
-# into the container at the path passed via --config (see deploy/configmap.yaml).
-# Nothing sensitive belongs in here — API keys and tokens are read from
-# environment variables (populated from a Kubernetes Secret), never from
-# this file.
+# This is a TEMPLATE, and it describes a generic "Go developer" persona - it
+# is not anybody's real search. Copy it, edit it for your own companies and
+# preferences, and mount it into the container at the path passed via
+# --config.
+#
+# Keep your real config in a PRIVATE repository (your own GitOps repo, or a
+# Kubernetes Secret) rather than in a fork of this one. Your profile text is
+# a fairly complete picture of what you are looking for, where you live, and
+# what you will not accept; that is not something to publish.
+#
+# Nothing sensitive belongs in here either way: API keys and tokens are read
+# from environment variables (populated from a Kubernetes Secret), never
+# from this file.
+#
+# See deploy/configmap.example.yaml for an example of the same document
+# wrapped in a ConfigMap.
 
 sources:
   # Greenhouse, Lever, Ashby, and SmartRecruiters all expose free public
@@ -71,23 +82,44 @@ filter:
   # this broad — it's just here to skip obviously-irrelevant postings
   # cheaply; the AI profile below does the real relevance judgment.
   keywords:
-    - "platform engineer"
-    - "platform engineering"
-    - "devops"
-    - "site reliability"
-    - "infrastructure engineer"
-    - "cloud engineer"
-    - "crossplane"
-    - "terraform"
+    - "go developer"
+    - "golang"
+    - "backend engineer"
+    - "software engineer"
+    - "distributed systems"
     - "kubernetes"
-    - "sre"
+    - "grpc"
+    - "api"
 
-  # Optional allow-list of location substrings. Leave empty ([]) to disable
-  # location filtering entirely.
+  # Where you are willing to work. Matching is case-insensitive and
+  # word-boundary aware ("US" matches "Austin, US" but not "Australia"), and
+  # these are phrases, so "Remote (Global)" is one entry.
+  #
+  # There is no special handling of the word "remote": a posting located
+  # "Remote - Canada" is treated exactly like one located "Toronto, Canada",
+  # because that is what it is. So list the remote phrasings that genuinely
+  # mean anywhere, and put the places you cannot work in `deny` - deny always
+  # wins, even when `allow` also matches.
   locations:
-    - "Germany"
-    - "Remote"
-    - "EMEA"
+    # Leave `allow` empty ([]) to skip the allow half of the check entirely.
+    allow:
+      - "Germany"
+      - "EMEA"
+      - "European Union"
+      - "Remote (Global)"
+      - "Worldwide"
+    # Places to reject outright, whatever else the posting says. This is what
+    # keeps a role that only looks remote from getting through.
+    deny:
+      - "United States"
+      - "Canada"
+    # What to do with a location that matches neither list - typically a bare
+    # "Remote", which says nothing about where you may legally be based.
+    # "reject" is the default and drops it. "pass" hands it to the AI scorer
+    # instead, which costs one AI call per posting but lets the profile and
+    # `ai.instructions` below judge it; that is the setting to use when your
+    # boards label a lot of postings with nothing more than "Remote".
+    unmatched: reject
 
   # 0-1 relevance score threshold (from the AI scorer) required to trigger
   # a notification.
@@ -109,11 +141,25 @@ ai:
   # model alongside each candidate job — edit this any time to change what
   # counts as a match, no code changes required.
   profile: |
-    Platform/DevOps/SRE engineer based in Germany looking for roles centered
-    on Infrastructure-as-Code / Infrastructure-as-Data, especially
-    Crossplane, Terraform, Pulumi, or Kubernetes operators/controllers.
-    Open to remote or Germany/EU-based roles. Especially interested in
-    developer-tools, observability, and cloud-infrastructure companies.
+    Backend / platform engineer looking for Go-focused roles: services and
+    APIs, distributed systems, and Kubernetes-adjacent infrastructure work.
+    Especially interested in developer tools, observability, and
+    data-intensive systems. Open to remote roles, or onsite/hybrid in
+    Germany or elsewhere in the EU.
+
+  # Optional extra rules for the scorer, appended to the fixed scoring
+  # prompt. Use this for hard constraints that would clutter the profile -
+  # above all legal-location ones, which the pre-filter above cannot judge
+  # on its own (a posting has to say something the lists recognize first).
+  #
+  # This text is TRUSTED OPERATOR TEXT. It is added to the system prompt
+  # rather than to the untrusted, fenced-off posting, so anything pasted here
+  # is obeyed. Never copy text out of a job posting into it.
+  #instructions: |
+  #  Treat "Remote - <country>" exactly like an onsite role in that country.
+  #  A role that is remote globally, or workable from Germany, is fine. If a
+  #  posting requires being legally based outside Germany or requires
+  #  relocation, score it 0.2 or below.
 
 notify:
   type: ntfy

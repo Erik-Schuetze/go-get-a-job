@@ -37,20 +37,22 @@ func TestLocationMatch(t *testing.T) {
 	job := model.Job{Location: "Berlin, Germany (Remote)"}
 
 	tests := []struct {
-		name      string
-		locations []string
-		want      bool
+		name string
+		cfg  config.LocationConfig
+		want bool
 	}{
-		{"empty locations always match", nil, true},
-		{"matches case-insensitively", []string{"GERMANY"}, true},
-		{"matches remote", []string{"remote"}, true},
-		{"no match", []string{"France", "Spain"}, false},
+		{"empty allow list always matches", config.LocationConfig{}, true},
+		{"matches case-insensitively", config.LocationConfig{Allow: []string{"GERMANY"}}, true},
+		{"matches remote", config.LocationConfig{Allow: []string{"remote"}}, true},
+		{"no match rejects by default", config.LocationConfig{Allow: []string{"France", "Spain"}}, false},
+		{"unmatched pass lets it through", config.LocationConfig{Allow: []string{"France"}, Unmatched: config.LocationUnmatchedPass}, true},
+		{"deny beats allow", config.LocationConfig{Allow: []string{"Germany"}, Deny: []string{"Germany"}}, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := LocationMatch(job, tt.locations); got != tt.want {
-				t.Errorf("LocationMatch() = %v, want %v", got, tt.want)
+			if got := MatchLocation(job, tt.cfg).Passed; got != tt.want {
+				t.Errorf("MatchLocation() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -65,13 +67,13 @@ func TestPasses(t *testing.T) {
 
 	cfg := config.FilterConfig{
 		Keywords:  []string{"crossplane"},
-		Locations: []string{"Germany"},
+		Locations: config.LocationConfig{Allow: []string{"Germany"}},
 	}
 	if !Passes(job, cfg) {
 		t.Error("expected job to pass both keyword and location filters")
 	}
 
-	cfg.Locations = []string{"France"}
+	cfg.Locations = config.LocationConfig{Allow: []string{"France"}}
 	if Passes(job, cfg) {
 		t.Error("expected job to fail location filter")
 	}

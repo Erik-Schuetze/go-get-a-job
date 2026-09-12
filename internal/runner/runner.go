@@ -43,7 +43,32 @@ type Summary struct {
 	Matched       int
 	SourceErrors  []error
 	ProcessErrors []error
+
+	// FilteredByLocation counts postings dropped by the location
+	// pre-filter, whether by a deny entry or by an unmatched location. It
+	// is reported separately from the keyword pre-filter because a
+	// too-broad location rule is invisible otherwise: the run simply looks
+	// like a quiet day.
+	FilteredByLocation int
+
+	// LocationRejections names the first few location rejections, for an
+	// end-of-run summary. Bounded so a misconfigured allow list cannot turn
+	// the log into a wall of text.
+	LocationRejections []LocationRejection
 }
+
+// LocationRejection describes one posting dropped by the location
+// pre-filter, sanitized for logging.
+type LocationRejection struct {
+	Company  string
+	Title    string
+	Location string
+	Rule     string
+	Kind     string
+}
+
+// maxReportedLocationRejections bounds Summary.LocationRejections.
+const maxReportedLocationRejections = 10
 
 // AllSourcesFailed reports whether every configured source failed to
 // fetch - a signal that something is systemically wrong (e.g. no network),
@@ -73,7 +98,7 @@ func (r *Runner) Run(ctx context.Context) Summary {
 		summary.Fetched += len(jobs)
 
 		for _, job := range jobs {
-			isNew, matched, err := r.processJob(ctx, job, now())
+			res, err := r.processJob(ctx, job, now())
 			if err != nil {
 				// The ID and title come from the ATS response. Structured
 				// logs are the one place where a newline from a hostile
@@ -87,11 +112,14 @@ func (r *Runner) Run(ctx context.Context) Summary {
 				summary.ProcessErrors = append(summary.ProcessErrors, fmt.Errorf("%s: %w", job.ID, err))
 				continue
 			}
-			if isNew {
+			if res.isNew {
 				summary.New++
 			}
-			if matched {
+			if res.matched {
 				summary.Matched++
+			}
+			if res.locationRejected {
+				recordLocationRejection(logger, &summary, job, res.location)
 			}
 		}
 	}
@@ -100,10 +128,60 @@ func (r *Runner) Run(ctx context.Context) Summary {
 		"fetched", summary.Fetched,
 		"new", summary.New,
 		"matched", summary.Matched,
+		"filtered_by_location", summary.FilteredByLocation,
 		"source_errors", len(summary.SourceErrors),
 		"process_errors", len(summary.ProcessErrors),
 	)
+
+	if len(summary.LocationRejections) > 0 {
+		logger.Info("location-filtered postings",
+			"count", summary.FilteredByLocation,
+			"showing_up_to", maxReportedLocationRejections,
+			"sample", summary.LocationRejections,
+		)
+	}
 	return summary
+}
+
+// recordLocationRejection logs one location rejection at debug level and
+// keeps a bounded sample for the end-of-run summary. The rule and kind are
+// included because the useful question - "why did this Germany-based search
+// drop a posting?" - needs the entry that matched, not just the fact of a
+// rejection.
+func recordLocationRejection(logger *slog.Logger, summary *Summary, job model.Job, decision filter.LocationDecision) {
+	summary.FilteredByLocation++
+
+	rejection := LocationRejection{
+		Company:  sanitize.SingleLine(job.Company, 200),
+		Title:    sanitize.SingleLine(job.Title, 200),
+		Location: sanitize.SingleLine(job.Location, 200),
+		Rule:     sanitize.SingleLine(decision.Rule, 200),
+		Kind:     decision.Kind,
+	}
+	if len(summary.LocationRejections) < maxReportedLocationRejections {
+		summary.LocationRejections = append(summary.LocationRejections, rejection)
+	}
+
+	logger.Debug("location rejected",
+		"company", rejection.Company,
+		"title", rejection.Title,
+		"location", rejection.Location,
+		"rule", rejection.Rule,
+		"kind", rejection.Kind,
+	)
+}
+
+// processResult is what processJob reports back to Run.
+type processResult struct {
+	isNew bool
+	// matched reports whether the job resulted in a delivered notification.
+	matched bool
+	// locationRejected reports whether the location pre-filter - not the
+	// keyword pre-filter - dropped the job.
+	locationRejected bool
+	// location is the location decision, meaningful when locationRejected
+	// is set.
+	location filter.LocationDecision
 }
 
 // processJob handles a single fetched job end to end: dedup check,
@@ -111,22 +189,32 @@ func (r *Runner) Run(ctx context.Context) Summary {
 // threshold) notification. It reports whether the job was new (i.e. not
 // already recorded from a prior run) and whether it resulted in a
 // delivered notification.
-func (r *Runner) processJob(ctx context.Context, job model.Job, now time.Time) (isNew bool, matched bool, err error) {
+func (r *Runner) processJob(ctx context.Context, job model.Job, now time.Time) (processResult, error) {
 	seen, err := r.Store.Seen(ctx, job.ID)
 	if err != nil {
-		return false, false, fmt.Errorf("checking seen status: %w", err)
+		return processResult{}, fmt.Errorf("checking seen status: %w", err)
 	}
 	if seen {
-		return false, false, nil
+		return processResult{}, nil
 	}
 
 	rec := store.Record{Job: job, FirstSeenAt: now}
 
+	// The location check is re-run separately when the combined pre-filter
+	// rejects, so a rejection can be attributed to the location rules
+	// rather than to the keyword list. Without that attribution, a
+	// too-broad or too-narrow location rule is invisible in the logs.
 	if !filter.Passes(job, r.Filter) {
 		if err := r.Store.Save(ctx, rec); err != nil {
-			return false, false, fmt.Errorf("saving filtered-out job: %w", err)
+			return processResult{}, fmt.Errorf("saving filtered-out job: %w", err)
 		}
-		return true, false, nil
+
+		res := processResult{isNew: true}
+		if loc := filter.MatchLocation(job, r.Filter.Locations); !loc.Passed {
+			res.locationRejected = true
+			res.location = loc
+		}
+		return res, nil
 	}
 
 	score, err := r.Scorer.Score(ctx, job, r.Profile)
@@ -134,27 +222,27 @@ func (r *Runner) processJob(ctx context.Context, job model.Job, now time.Time) (
 		// Deliberately not saved: leaving the job unseen means it's
 		// retried next run instead of silently dropped after a transient
 		// AI-provider hiccup.
-		return false, false, fmt.Errorf("scoring job: %w", err)
+		return processResult{}, fmt.Errorf("scoring job: %w", err)
 	}
 	rec.AIScore = score.Score
 	rec.AIReason = score.Reason
 
 	if err := r.Store.Save(ctx, rec); err != nil {
-		return false, false, fmt.Errorf("saving scored job: %w", err)
+		return processResult{}, fmt.Errorf("saving scored job: %w", err)
 	}
 
 	if score.Score < r.Filter.MinAIScore {
-		return true, false, nil
+		return processResult{isNew: true}, nil
 	}
 
 	if err := r.Notifier.Notify(ctx, job, score.Reason); err != nil {
-		return false, false, fmt.Errorf("sending notification: %w", err)
+		return processResult{}, fmt.Errorf("sending notification: %w", err)
 	}
 	if err := r.Store.MarkNotified(ctx, job.ID, now); err != nil {
-		return false, false, fmt.Errorf("marking notified: %w", err)
+		return processResult{}, fmt.Errorf("marking notified: %w", err)
 	}
 
-	return true, true, nil
+	return processResult{isNew: true, matched: true}, nil
 }
 
 func (r *Runner) logger() *slog.Logger {
