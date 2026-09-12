@@ -32,29 +32,10 @@ func KeywordMatch(job model.Job, keywords []string) bool {
 	return false
 }
 
-// LocationMatch reports whether job's location contains at least one of
-// the given location substrings (case-insensitive). An empty locations
-// list disables the filter (always matches).
-func LocationMatch(job model.Job, locations []string) bool {
-	if len(locations) == 0 {
-		return true
-	}
-	haystack := strings.ToLower(job.Location)
-	for _, loc := range locations {
-		loc = strings.TrimSpace(loc)
-		if loc == "" {
-			continue
-		}
-		if strings.Contains(haystack, strings.ToLower(loc)) {
-			return true
-		}
-	}
-	return false
-}
-
 // Passes reports whether job should proceed to AI scoring, applying both
 // the keyword and location pre-filters from cfg. This is the cheap gate
 // that keeps AI usage (and cost) down to only plausibly-relevant postings.
+// Use MatchLocation to learn why a posting was dropped.
 func Passes(job model.Job, cfg config.FilterConfig) bool {
-	return KeywordMatch(job, cfg.Keywords) && LocationMatch(job, cfg.Locations)
+	return KeywordMatch(job, cfg.Keywords) && MatchLocation(job, cfg.Locations).Passed
 }

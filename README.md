@@ -62,10 +62,14 @@ internal/notify/      notifier interface + ntfy implementation
 internal/runner/      orchestrates sources -> filter -> store -> notify
 internal/sanitize/    strips control characters from untrusted text
 internal/httpbody/    bounded reads of untrusted response bodies
-config/               example YAML config
-deploy/               plain Kubernetes manifests (no Kustomize/Helm)
+config/               example YAML config (config.example.yaml)
+deploy/               EXAMPLE Kubernetes manifests (no Kustomize/Helm)
 Dockerfile            multi-stage build -> distroless static image
 ```
+
+They are all examples: the config and the manifests describe a generic **Go
+developer** persona. Keep your real one in a repository you control - see
+[Configuring what it watches](#configuring-what-it-watches).
 
 ## Local development
 
@@ -78,6 +82,13 @@ make vuln        # govulncheck
 make build       # builds ./bin/go-get-a-job
 make run         # builds, then runs against config/config.example.yaml
 ```
+
+Two flags:
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-config` | `config.yaml` | Path to the YAML config. |
+| `-log-level` | `info` | `debug`, `info`, `warn`, or `error`. `debug` adds one line per filtered-out posting, including the location entry that decided it. |
 
 The whole pipeline is covered by unit tests using fakes/`httptest` servers
 (no real network calls in `go test ./...`), and every source connector was
@@ -103,6 +114,14 @@ and ntfy PVCs - block storage, not a network filesystem, since SQLite
 explicitly warns against NFS-style locking). Swap `storageClassName` in
 `deploy/pvc.yaml` / `deploy/ntfy-pvc.yaml` if your cluster uses something
 else.
+
+**Copy `deploy/` into your own (private) GitOps repository first.** If Argo CD
+or Flux points at this repo, every change here deploys to your cluster - while
+*your* config lives in a repository you do not own. One owner for both is the
+point.
+
+The commands below apply the manifests directly, which is the quickest way to
+try things out; they assume you are in a clone of this repo.
 
 ### 1. Image
 
@@ -150,7 +169,9 @@ automatically once you push.
 
 ```shell
 kubectl apply -f deploy/namespace.yaml
-kubectl apply -f deploy/configmap.yaml
+# The example config, so the CronJob has something to mount. Replace it with
+# your own before relying on the results - see "Configuring what it watches".
+kubectl apply -f deploy/configmap.example.yaml
 kubectl apply -f deploy/ntfy-configmap.yaml
 kubectl apply -f deploy/ntfy-pvc.yaml
 kubectl apply -f deploy/ntfy-deployment.yaml
@@ -265,8 +286,16 @@ hostname - nothing in this repo requires ntfy to be publicly reachable.
 
 ## Configuring what it watches
 
-Edit `deploy/configmap.yaml` (or `config/config.example.yaml` for local
-runs) - no code changes or rebuilds needed, just re-apply the ConfigMap.
+Every key lives in one YAML document. `config/config.example.yaml` is the
+annotated reference for all of them, and `deploy/configmap.example.yaml` is the
+same thing wrapped in a ConfigMap. Edit your own copy - no code changes or
+rebuilds needed, just re-apply the ConfigMap.
+
+A real config is not neutral: the `ai.profile` text reads like a short CV, and
+`filter.locations` names the countries you can and cannot work from. Keep it in
+a repository you control rather than a public one or a fork of one. Whatever
+manages it, the ConfigMap is semi-trusted at run time - see [ConfigMap edits can
+steal your secrets](#configmap-edits-can-steal-your-secrets).
 
 ### Adding a Greenhouse / Lever / Ashby / SmartRecruiters company
 
@@ -354,12 +383,86 @@ re-add them:
 
 ### Tuning relevance
 
-- `filter.keywords` / `filter.locations`: cheap pre-filter, OR-matched,
-  case-insensitive. Leave either empty (`[]`) to disable that filter.
+- `filter.keywords`: cheap pre-filter. A posting's title+description must match
+  at least one entry, case-insensitively, before it is ever sent to the AI
+  scorer. Leave it empty (`[]`) to disable it.
+- `filter.locations`: where you are willing to work - see below.
 - `filter.minAIScore`: 0-1 threshold for a notification to fire.
 - `ai.profile`: free text describing what you're looking for - this is
   what the model actually judges postings against, so this is the main
   lever for changing what counts as a match.
+- `ai.instructions`: optional hard rules appended to the scoring prompt - see
+  below.
+
+#### `filter.locations` - allow, deny, unmatched
+
+Matching is case-insensitive and **word-boundary aware**, and entries are
+phrases. That means `US` matches `Austin, US` but not `Australia`, `Belarus`, or
+`Prussia`, and `Remote (Global)` is a single entry rather than two words
+matching independently.
+
+```yaml
+filter:
+  locations:
+    allow:
+      - Germany
+      - EMEA
+      - European Union
+      - "Remote (Global)"
+      - Worldwide
+    deny:
+      - United States
+      - Canada
+    unmatched: reject
+```
+
+- **`deny` always wins.** A posting matching any `deny` entry is rejected even
+  when it also matches `allow`. This is what stops the classic leak: with
+  `allow: [Remote]` and no deny list, a posting located
+  `"Remote - Canada"` matches the substring `Remote` and reaches the scorer,
+  which is exactly the wrong answer for someone who cannot work from Canada.
+- **`unmatched`** decides what happens when a location matches *neither* list,
+  which in practice means a bare `"Remote"` that says nothing about where you
+  may legally be based. The default, `reject`, drops it. `pass` hands it to the
+  AI scorer instead, at the cost of one AI call per posting - use it when your
+  boards label a lot of postings with nothing more than `"Remote"`.
+- Leave `allow` empty (`[]`) to skip the allow half of the check entirely;
+  `deny` still applies.
+
+There is deliberately **no special handling of the word "remote"**. A posting
+located `"Remote - Canada"` is treated exactly like one located
+`"Toronto, Canada"`, because that is what it is. List the remote phrasings that
+genuinely mean *anywhere* - `Remote (Global)`, `Worldwide` - in `allow`, and put
+the places you cannot work in `deny`.
+
+#### `ai.instructions` - hard rules the pre-filter can't express
+
+A free-text block appended to the scorer's **system** prompt, after the fixed
+scoring contract. Use it for constraints that are a matter of judgment rather
+than a string the location lists can recognize:
+
+```yaml
+ai:
+  instructions: |
+    Treat "Remote - <country>" exactly like an onsite role in that country.
+    A role that is remote globally, or workable from Germany, is fine. If a
+    posting requires being legally based outside Germany or requires
+    relocation, score it 0.2 or below.
+```
+
+Two things to know:
+
+- **It is trusted operator text.** It goes into the system prompt, not into the
+  fenced-off, untrusted job posting, so anything you paste there is obeyed as an
+  instruction. Never copy text out of a job posting, an issue, or an email into
+  it. The postings themselves are still neutralized and fenced, and the JSON
+  output contract cannot be overridden from here.
+- **It costs tokens on every call.** It is capped (4000 characters) and the
+  config fails to load if you exceed it.
+
+Dropped-location diagnostics appear at the end of each run and, per posting,
+under `--log-level debug`, so you can see *why* something was filtered rather
+than guessing.
 
 ## Security
 
@@ -385,7 +488,7 @@ because the decisions here look arbitrary until you know what they're for.
 | Input | Trust |
 |---|---|
 | Secret values (env only, never on disk) | trusted |
-| `deploy/configmap.yaml` | semi-trusted - GitOps-managed, but see "ConfigMap edits" below |
+| Your ConfigMap (GitOps-managed) | semi-trusted - see "ConfigMap edits" below |
 | Job postings from the ATS APIs (titles, descriptions, IDs, URLs) | **untrusted** - anyone can publish a job posting |
 | The AI provider's response (`score`, `reason`, `signals`) | **untrusted** |
 | Pod network | no longer assumed trusted - see the NetworkPolicy |
@@ -604,6 +707,37 @@ Deliberately left out of this hardening pass, so they aren't lost:
   phone over a VPN or LAN, restricting the public route to LAN source IPs - or
   dropping the public route entirely - removes a whole class of risk at
   essentially no cost to this app.
+
+## Versioning and releases
+
+This project follows [semver](https://semver.org), with one adaptation: **the
+config schema is the public API**. That is what the version numbers speak to,
+because the config is the thing you write and the thing that can break.
+
+- **MAJOR** - incompatible changes. Removing or renaming a config key or CLI
+  flag, or changing filter/scoring semantics in a way that invalidates a
+  working config.
+- **MINOR** - backwards-compatible additions: a new source connector, a new
+  notifier, a new config key that has a default, a new optional flag.
+- **PATCH** - bug fixes, documentation, and dependency bumps with no behavior
+  change.
+
+**The 0.x caveat applies right now.** While the major version is `0`, breaking
+changes are released as MINOR bumps rather than MAJOR ones - so the
+`filter.locations` reshape in `v0.2.0` is a MINOR bump, not a MAJOR one. The
+config API is promoted to `v1.0.0` only as an explicit stability commitment,
+not as a side effect of a feature landing.
+
+Conventions the releases follow:
+
+- The **git tag is the single source of truth**. The image tag mirrors it
+  exactly, and the release notes come from the tagged commit (see
+  `.github/workflows/`).
+- The deployed `CronJob` pins the image by **tag and digest**, because a tag can
+  be moved to point at different bytes. Repinning is a deliberate, reviewable
+  commit.
+- Every behavior change gets a `CHANGELOG.md` entry under Added / Changed /
+  Fixed / Removed / Breaking.
 
 ## Not covered (by design, for now)
 

@@ -2,6 +2,20 @@
 # `schedule` freely - jobs typically stay open for weeks, so once/day is a
 # reasonable starting point; there's no need to poll more often unless you
 # want tighter latency on "brand new posting" notifications.
+#
+# These manifests are EXAMPLES/TEMPLATES. Copy the ones you need into your own
+# (private) GitOps repository, along with your real config - see "Where your
+# real config lives" in the README for why that matters, and
+# configmap.example.yaml for the config half of it.
+#
+# The image below is the maintainer's build, pinned by tag AND digest. Replace
+# both with your own: an unpinned tag on a third-party registry means the
+# deployed binary can change without your repository changing. To repin:
+#
+#   docker buildx imagetools inspect ghcr.io/erik-schuetze/go-get-a-job:<tag> \
+#     --format '{{.Manifest.Digest}}'
+#
+# (or use your own registry/tag if you built it yourself).
 apiVersion: batch/v1
 kind: CronJob
 metadata:

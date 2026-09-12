@@ -1,0 +1,103 @@
+# EXAMPLE ConfigMap - not anybody's real search.
+#
+# Non-secret go-get-a-job configuration, which the CronJob mounts at
+# /etc/go-get-a-job/config.yaml (see cronjob.yaml). Editing the "sources",
+# "filter", and "ai.profile" sections changes which companies are watched
+# and what counts as a match - no image rebuild required, just apply the
+# updated ConfigMap again (the CronJob picks up the new content on its next
+# scheduled run).
+#
+# Copy the file into YOUR OWN (private) GitOps repository and edit it there.
+# The persona below is a generic "Go developer" placeholder; a real config
+# says which specialisms you want, which country you live in, whether you
+# will relocate, and which regions you can legally be hired from - which is a
+# fair amount of personal information to hand to the public. Keeping it in
+# your own repo also means the repository you copied it from is never the
+# source of truth for your cluster.
+#
+# Nothing secret belongs in here either way: API keys and tokens are read
+# from environment variables populated from a Kubernetes Secret (see
+# secret.example.yaml), never from this file.
+#
+# config/config.example.yaml is the same document with the full set of
+# explanatory comments; read that one to understand every key.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: go-get-a-job-config
+  namespace: go-get-a-job
+data:
+  config.yaml: |
+    sources:
+      # Replace these with the companies you actually want to watch. See
+      # "Verifying a board before you add it" in the README first: a wrong
+      # board token fails per-run and silently, not loudly.
+      - type: greenhouse
+        company: grafanalabs
+        displayName: "Grafana Labs"
+      - type: greenhouse
+        company: gitlab
+        displayName: "GitLab"
+
+    filter:
+      # Cheap pre-filter, applied before any AI call. Keep it broad.
+      keywords:
+        - "go developer"
+        - "golang"
+        - "backend engineer"
+        - "software engineer"
+        - "distributed systems"
+        - "kubernetes"
+        - "grpc"
+        - "api"
+      locations:
+        # Word-boundary phrase matching, case-insensitive. An empty `allow`
+        # list skips the allow half of the check entirely.
+        allow:
+          - "Germany"
+          - "EMEA"
+          - "European Union"
+          - "Remote (Global)"
+          - "Worldwide"
+        # Rejected outright, whatever else the posting says. `deny` always
+        # wins over `allow` - this is what stops "Remote - Canada" from
+        # riding in on a bare "Remote" allow entry.
+        deny:
+          - "United States"
+          - "Canada"
+        # What to do when the location matches neither list, typically a
+        # bare "Remote". "reject" (the default) drops it; "pass" hands it to
+        # the AI scorer instead, at the cost of one extra AI call.
+        unmatched: reject
+      minAIScore: 0.7
+
+    ai:
+      provider: deepseek
+      apiKeyEnv: DEEPSEEK_API_KEY
+      baseURL: https://api.deepseek.com
+      model: deepseek-chat
+      profile: |
+        Backend / platform engineer looking for Go-focused roles: services and
+        APIs, distributed systems, and Kubernetes-adjacent infrastructure work.
+        Especially interested in developer tools, observability, and
+        data-intensive systems. Open to remote roles, or onsite/hybrid in
+        Germany or elsewhere in the EU.
+      # Optional hard rules for the scorer, appended after the fixed scoring
+      # prompt. TRUSTED OPERATOR TEXT - anything pasted here is obeyed, so
+      # never copy text out of a job posting into it.
+      #instructions: |
+      #  Treat "Remote - <country>" exactly like an onsite role in that
+      #  country. A role that is remote globally, or workable from Germany,
+      #  is fine. If a posting requires being legally based outside Germany
+      #  or requires relocation, score it 0.2 or below.
+
+    notify:
+      type: ntfy
+      ntfy:
+        url: http://ntfy.go-get-a-job.svc.cluster.local
+        topic: job-matches
+        tokenEnv: NTFY_TOKEN
+
+    store:
+      type: sqlite
+      path: /data/go-get-a-job.db

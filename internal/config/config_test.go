@@ -3,7 +3,11 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func writeTempConfig(t *testing.T, content string) string {
@@ -29,12 +33,16 @@ sources:
 
 filter:
   keywords: ["platform engineer", "crossplane"]
-  locations: ["Germany", "Remote"]
+  locations:
+    allow: ["Germany", "EMEA", "Remote (Global)"]
+    deny: ["Canada", "United States"]
+    unmatched: reject
   minAIScore: 0.8
 
 ai:
   apiKeyEnv: DEEPSEEK_API_KEY
   profile: "Looking for platform engineering roles."
+  instructions: "A role that requires relocation outside Germany scores 0.2 or below."
 
 notify:
   type: ntfy
@@ -84,6 +92,147 @@ func TestLoad_DefaultsAppliedWhenMinAIScoreZero(t *testing.T) {
 	if cfg.Filter.MinAIScore != 0.7 {
 		t.Errorf("expected default minAIScore 0.7, got %v", cfg.Filter.MinAIScore)
 	}
+	if cfg.Filter.Locations.Unmatched != LocationUnmatchedReject {
+		t.Errorf("expected an omitted locations.unmatched to default to %q, got %q",
+			LocationUnmatchedReject, cfg.Filter.Locations.Unmatched)
+	}
+}
+
+func TestLoad_LocationsParsed(t *testing.T) {
+	cfg, err := Load(writeTempConfig(t, validConfig))
+	if err != nil {
+		t.Fatalf("Load returned unexpected error: %v", err)
+	}
+
+	locs := cfg.Filter.Locations
+	if len(locs.Allow) != 3 || locs.Allow[0] != "Germany" {
+		t.Errorf("expected the allow list to be parsed in order, got %#v", locs.Allow)
+	}
+	if len(locs.Deny) != 2 || locs.Deny[0] != "Canada" {
+		t.Errorf("expected the deny list to be parsed in order, got %#v", locs.Deny)
+	}
+	if locs.Unmatched != LocationUnmatchedReject {
+		t.Errorf("expected unmatched %q, got %q", LocationUnmatchedReject, locs.Unmatched)
+	}
+	if cfg.AI.Instructions == "" {
+		t.Error("expected ai.instructions to be parsed")
+	}
+}
+
+// TestLoad_LocationsOldListFormFailsWithGuidance covers the upgrade path for
+// a config written against v0.1.0, where filter.locations was a plain list.
+// yaml.v3's own message ("cannot unmarshal !!seq into
+// config.LocationConfig") names the Go type and not the fix, so
+// LocationConfig.UnmarshalYAML replaces it.
+func TestLoad_LocationsOldListFormFailsWithGuidance(t *testing.T) {
+	old := strings.Replace(validConfig,
+		"  locations:\n    allow: [\"Germany\", \"EMEA\", \"Remote (Global)\"]\n    deny: [\"Canada\", \"United States\"]\n    unmatched: reject\n",
+		"  locations: [\"Germany\", \"Remote\"]\n", 1)
+	if old == validConfig {
+		t.Fatal("test setup failed: the locations block was not found in validConfig")
+	}
+
+	_, err := Load(writeTempConfig(t, old))
+	if err == nil {
+		t.Fatal("expected the old list form to fail, got nil")
+	}
+	for _, want := range []string{"allow", "deny", "v0.2.0"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("expected the migration error to mention %q, got: %v", want, err)
+		}
+	}
+}
+
+func TestValidate_LocationsUnmatchedMode(t *testing.T) {
+	tests := []struct {
+		name      string
+		unmatched string
+		wantErr   bool
+	}{
+		{"empty is allowed and defaulted", "", false},
+		{"reject", LocationUnmatchedReject, false},
+		{"pass", LocationUnmatchedPass, false},
+		{"unknown", "maybe", true},
+		{"wrong case", "Reject", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.Filter.Locations.Unmatched = tt.unmatched
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatalf("expected an error for unmatched %q, got nil", tt.unmatched)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error for unmatched %q: %v", tt.unmatched, err)
+			}
+		})
+	}
+}
+
+func TestValidate_LocationEntries(t *testing.T) {
+	tests := []struct {
+		name    string
+		allow   []string
+		deny    []string
+		wantErr string
+	}{
+		{"ordinary entries", []string{"Germany", "Remote (Global)"}, []string{"Canada"}, ""},
+		{"two characters is the minimum", []string{"US"}, nil, ""},
+		{"blank entry", []string{""}, nil, "must not be blank"},
+		{"whitespace-only entry", nil, []string{"   "}, "must not be blank"},
+		{"single character entry", []string{"D"}, nil, "too short"},
+		{"oversized entry", nil, []string{strings.Repeat("x", maxLocationEntryChars+1)}, "at most"},
+		{"too many entries", makeEntries(maxLocationEntries + 1), nil, "more than"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.Filter.Locations.Allow = tt.allow
+			cfg.Filter.Locations.Deny = tt.deny
+
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected an error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("expected an error containing %q, got: %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestValidate_InstructionsLength(t *testing.T) {
+	cfg := baseValidConfig()
+	cfg.AI.Instructions = strings.Repeat("x", maxInstructionsChars)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected an instructions value exactly at the cap to be accepted: %v", err)
+	}
+
+	cfg.AI.Instructions = strings.Repeat("x", maxInstructionsChars+1)
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected an oversized ai.instructions to be rejected, got nil")
+	}
+	if !strings.Contains(err.Error(), "ai.instructions") {
+		t.Errorf("expected the error to name ai.instructions, got: %v", err)
+	}
+}
+
+func makeEntries(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = "place-" + strconv.Itoa(i)
+	}
+	return out
 }
 
 func TestValidate_NoSources(t *testing.T) {
@@ -485,5 +634,38 @@ func TestLoad_ExampleConfigPassesStricterValidation(t *testing.T) {
 	}
 	if len(cfg.Sources) == 0 {
 		t.Fatal("expected the example config to define at least one source")
+	}
+}
+
+// TestLoad_DeployExampleConfigMap guards the other config shipped in the
+// repo. deploy/configmap.example.yaml wraps its document in a ConfigMap, so
+// nothing parses it as a config unless a test does - and a schema change that
+// broke only this file would otherwise surface as a CronJob exiting 1 in a
+// real cluster, at 06:00, silently.
+func TestLoad_DeployExampleConfigMap(t *testing.T) {
+	path := filepath.Join("..", "..", "deploy", "configmap.example.yaml")
+	raw, err := os.ReadFile(path) //nolint:gosec // fixed path inside the repo
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+
+	var manifest struct {
+		Data map[string]string `yaml:"data"`
+	}
+	if err := yaml.Unmarshal(raw, &manifest); err != nil {
+		t.Fatalf("parsing %s: %v", path, err)
+	}
+
+	embedded, ok := manifest.Data["config.yaml"]
+	if !ok {
+		t.Fatalf("%s defines no data[\"config.yaml\"]", path)
+	}
+
+	cfg, err := Load(writeTempConfig(t, embedded))
+	if err != nil {
+		t.Fatalf("the config embedded in %s must load cleanly: %v", path, err)
+	}
+	if len(cfg.Sources) == 0 {
+		t.Fatal("expected the embedded config to define at least one source")
 	}
 }

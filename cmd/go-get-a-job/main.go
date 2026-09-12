@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/Erik-Schuetze/go-get-a-job/internal/config"
@@ -30,9 +31,16 @@ func main() {
 // keeping main() itself trivial and untestable-code-free.
 func run() int {
 	configPath := flag.String("config", "config.yaml", "path to the go-get-a-job YAML config file")
+	logLevel := flag.String("log-level", "info", "log verbosity: debug, info, warn, or error")
 	flag.Parse()
 
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	level, err := parseLogLevel(*logLevel)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -log-level: %v\n", err)
+		return 2
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -74,6 +82,7 @@ func run() int {
 	notifier := notify.NewNtfy(cfg.Notify.Ntfy.URL, cfg.Notify.Ntfy.Topic, ntfyToken)
 
 	scorer := filter.NewAIScorer(cfg.AI.BaseURL, apiKey, cfg.AI.Model)
+	scorer.Instructions = cfg.AI.Instructions
 
 	r := &runner.Runner{
 		Sources:  src,
@@ -97,4 +106,20 @@ func run() int {
 	}
 
 	return 0
+}
+
+// parseLogLevel maps the -log-level flag onto a slog.Level.
+func parseLogLevel(s string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return 0, fmt.Errorf("%q is not one of debug, info, warn, error", s)
+	}
 }
