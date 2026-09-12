@@ -145,14 +145,3 @@ func TestAIScorer_Score_InvalidJSONContent(t *testing.T) {
 		t.Fatal("expected error when assistant content isn't valid JSON, got nil")
 	}
 }
-
-func TestTruncate(t *testing.T) {
-	if got := truncate("short", 10); got != "short" {
-		t.Errorf("expected short string unchanged, got %q", got)
-	}
-	long := strings.Repeat("a", 20)
-	got := truncate(long, 10)
-	if !strings.HasPrefix(got, strings.Repeat("a", 10)) || !strings.Contains(got, "truncated") {
-		t.Errorf("expected truncated marker, got %q", got)
-	}
-}

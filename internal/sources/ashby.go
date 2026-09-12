@@ -2,10 +2,10 @@ package sources
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 
+	"github.com/Erik-Schuetze/go-get-a-job/internal/httpbody"
 	"github.com/Erik-Schuetze/go-get-a-job/internal/model"
 )
 
@@ -21,18 +21,20 @@ type Ashby struct {
 	Company     string
 	DisplayName string
 
-	BaseURL    string
-	HTTPClient *http.Client
+	BaseURL          string
+	HTTPClient       *http.Client
+	MaxResponseBytes int64
 }
 
 // NewAshby builds an Ashby source for the given company slug and
 // human-readable display name.
 func NewAshby(company, displayName string) *Ashby {
 	return &Ashby{
-		Company:     company,
-		DisplayName: displayName,
-		BaseURL:     ashbyDefaultBaseURL,
-		HTTPClient:  defaultHTTPClient(),
+		Company:          company,
+		DisplayName:      displayName,
+		BaseURL:          ashbyDefaultBaseURL,
+		HTTPClient:       defaultHTTPClient(),
+		MaxResponseBytes: httpbody.MaxAPIBytes,
 	}
 }
 
@@ -55,7 +57,10 @@ type ashbyJob struct {
 // Fetch retrieves every open, listed posting on this company's Ashby
 // board.
 func (a *Ashby) Fetch(ctx context.Context) ([]model.Job, error) {
-	url := fmt.Sprintf("%s/%s", a.BaseURL, a.Company)
+	url, err := buildURL(a.BaseURL, "", a.Company)
+	if err != nil {
+		return nil, fmt.Errorf("ashby(%s): %w", a.Company, err)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -66,15 +71,15 @@ func (a *Ashby) Fetch(ctx context.Context) ([]model.Job, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ashby(%s): request failed: %w", a.Company, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("ashby(%s): unexpected status %d", a.Company, resp.StatusCode)
 	}
 
 	var parsed ashbyResponse
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return nil, fmt.Errorf("ashby(%s): decoding response: %w", a.Company, err)
+	if err := httpbody.DecodeJSON(resp.Body, a.MaxResponseBytes, &parsed); err != nil {
+		return nil, fmt.Errorf("ashby(%s): reading response: %w", a.Company, err)
 	}
 
 	jobs := make([]model.Job, 0, len(parsed.Jobs))

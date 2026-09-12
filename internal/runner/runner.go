@@ -14,6 +14,7 @@ import (
 	"github.com/Erik-Schuetze/go-get-a-job/internal/filter"
 	"github.com/Erik-Schuetze/go-get-a-job/internal/model"
 	"github.com/Erik-Schuetze/go-get-a-job/internal/notify"
+	"github.com/Erik-Schuetze/go-get-a-job/internal/sanitize"
 	"github.com/Erik-Schuetze/go-get-a-job/internal/sources"
 	"github.com/Erik-Schuetze/go-get-a-job/internal/store"
 )
@@ -65,7 +66,7 @@ func (r *Runner) Run(ctx context.Context) Summary {
 	for _, src := range r.Sources {
 		jobs, err := src.Fetch(ctx)
 		if err != nil {
-			logger.Error("source fetch failed", "source", src.Name(), "error", err)
+			logger.Error("source fetch failed", "source", sanitize.SingleLine(src.Name(), 120), "error", sanitize.SingleLine(err.Error(), 500))
 			summary.SourceErrors = append(summary.SourceErrors, fmt.Errorf("%s: %w", src.Name(), err))
 			continue
 		}
@@ -74,7 +75,15 @@ func (r *Runner) Run(ctx context.Context) Summary {
 		for _, job := range jobs {
 			isNew, matched, err := r.processJob(ctx, job, now())
 			if err != nil {
-				logger.Error("processing job failed", "job", job.ID, "title", job.Title, "error", err)
+				// The ID and title come from the ATS response. Structured
+				// logs are the one place where a newline from a hostile
+				// posting could be mistaken for a new record, so both are
+				// collapsed to a single line before they're written.
+				logger.Error("processing job failed",
+					"job", sanitize.SingleLine(job.ID, 120),
+					"title", sanitize.SingleLine(job.Title, 200),
+					"error", sanitize.SingleLine(err.Error(), 500),
+				)
 				summary.ProcessErrors = append(summary.ProcessErrors, fmt.Errorf("%s: %w", job.ID, err))
 				continue
 			}

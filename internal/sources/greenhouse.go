@@ -2,10 +2,10 @@ package sources
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 
+	"github.com/Erik-Schuetze/go-get-a-job/internal/httpbody"
 	"github.com/Erik-Schuetze/go-get-a-job/internal/model"
 )
 
@@ -20,20 +20,26 @@ type Greenhouse struct {
 	Company     string
 	DisplayName string
 
-	// BaseURL and HTTPClient are overridable (e.g. for tests against a fake
-	// server); NewGreenhouse sets sane defaults for real use.
+	// BaseURL, HTTPClient, and MaxResponseBytes are overridable (e.g. for
+	// tests against a fake server); NewGreenhouse sets sane defaults for
+	// real use.
 	BaseURL    string
 	HTTPClient *http.Client
+	// MaxResponseBytes caps how much of the response is read; see
+	// internal/httpbody. A large board with descriptions inline is the
+	// biggest legitimate response in the pipeline.
+	MaxResponseBytes int64
 }
 
 // NewGreenhouse builds a Greenhouse source for the given board token
 // (company) and human-readable display name.
 func NewGreenhouse(company, displayName string) *Greenhouse {
 	return &Greenhouse{
-		Company:     company,
-		DisplayName: displayName,
-		BaseURL:     greenhouseDefaultBaseURL,
-		HTTPClient:  defaultHTTPClient(),
+		Company:          company,
+		DisplayName:      displayName,
+		BaseURL:          greenhouseDefaultBaseURL,
+		HTTPClient:       defaultHTTPClient(),
+		MaxResponseBytes: httpbody.MaxAPIBytes,
 	}
 }
 
@@ -58,7 +64,10 @@ type greenhouseLocation struct {
 
 // Fetch retrieves every open posting on this company's Greenhouse board.
 func (g *Greenhouse) Fetch(ctx context.Context) ([]model.Job, error) {
-	url := fmt.Sprintf("%s/%s/jobs?content=true", g.BaseURL, g.Company)
+	url, err := buildURL(g.BaseURL, "content=true", g.Company, "jobs")
+	if err != nil {
+		return nil, fmt.Errorf("greenhouse(%s): %w", g.Company, err)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -69,15 +78,15 @@ func (g *Greenhouse) Fetch(ctx context.Context) ([]model.Job, error) {
 	if err != nil {
 		return nil, fmt.Errorf("greenhouse(%s): request failed: %w", g.Company, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("greenhouse(%s): unexpected status %d", g.Company, resp.StatusCode)
 	}
 
 	var parsed greenhouseResponse
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return nil, fmt.Errorf("greenhouse(%s): decoding response: %w", g.Company, err)
+	if err := httpbody.DecodeJSON(resp.Body, g.MaxResponseBytes, &parsed); err != nil {
+		return nil, fmt.Errorf("greenhouse(%s): reading response: %w", g.Company, err)
 	}
 
 	jobs := make([]model.Job, 0, len(parsed.Jobs))

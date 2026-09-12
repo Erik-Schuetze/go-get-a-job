@@ -34,12 +34,26 @@ type SQLiteStore struct {
 }
 
 // OpenSQLite opens (creating the file and any parent directories if
-// necessary) the SQLite database at path and ensures the schema exists.
-func OpenSQLite(path string) (*SQLiteStore, error) {
+// necessary) the SQLite database at path and ensures the schema exists. The
+// context bounds the initial schema statement.
+func OpenSQLite(ctx context.Context, path string) (*SQLiteStore, error) {
 	if dir := filepath.Dir(path); dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		// 0700 rather than 0755: the database is the operator's own
+		// job-search history, and nothing outside this container has any
+		// reason to traverse into it.
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("creating store directory %q: %w", dir, err)
 		}
+		// Tighten a directory that already exists with looser permissions.
+		// Best-effort: when the path is a mounted volume root the mount
+		// point is owned by root and cannot be chmodded by the (non-root)
+		// process, which is fine because the volume's own permissions
+		// already govern access there.
+		_ = os.Chmod(dir, 0o700) //nolint:gosec // G302: directories need the execute bit; 0700 is owner-only
+	}
+
+	if err := ensurePrivateFile(path); err != nil {
+		return nil, err
 	}
 
 	db, err := sql.Open("sqlite", path)
@@ -52,12 +66,37 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 	// their likelihood under SQLite's single-writer model.
 	db.SetMaxOpenConns(1)
 
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
+	if _, err := db.ExecContext(ctx, schema); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("creating schema: %w", err)
 	}
 
 	return &SQLiteStore{db: db}, nil
+}
+
+// ensurePrivateFile creates the database file if needed and makes sure it is
+// only readable by its owner. The database holds the operator's job-search
+// history, so it has no reason to be group- or world-readable; the driver
+// would otherwise create it 0644 & umask.
+func ensurePrivateFile(path string) error {
+	// The path comes from store.path in the operator's own config file,
+	// not from any untrusted input.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // G304: operator-configured path
+	if err != nil {
+		return fmt.Errorf("creating sqlite database file %q: %w", path, err)
+	}
+
+	// Chmod explicitly rather than relying on the creation mode above: the
+	// mode is masked by umask, and an existing file keeps whatever mode it
+	// was created with.
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("setting permissions on sqlite database file %q: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing sqlite database file %q: %w", path, err)
+	}
+	return nil
 }
 
 // Seen reports whether a job with this ID has already been recorded.

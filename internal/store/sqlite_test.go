@@ -12,7 +12,7 @@ import (
 func openTestStore(t *testing.T) *SQLiteStore {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "test.db")
-	s, err := OpenSQLite(path)
+	s, err := OpenSQLite(context.Background(), path)
 	if err != nil {
 		t.Fatalf("OpenSQLite returned error: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestSQLiteStore_Get_NotFound(t *testing.T) {
 func TestSQLiteStore_PersistsAcrossReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "test.db")
 
-	s1, err := OpenSQLite(path)
+	s1, err := OpenSQLite(context.Background(), path)
 	if err != nil {
 		t.Fatalf("OpenSQLite returned error: %v", err)
 	}
@@ -162,11 +162,11 @@ func TestSQLiteStore_PersistsAcrossReopen(t *testing.T) {
 		t.Fatalf("Close returned error: %v", err)
 	}
 
-	s2, err := OpenSQLite(path)
+	s2, err := OpenSQLite(context.Background(), path)
 	if err != nil {
 		t.Fatalf("reopening store returned error: %v", err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 
 	seen, err := s2.Seen(context.Background(), "job-4")
 	if err != nil {

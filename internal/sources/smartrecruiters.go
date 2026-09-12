@@ -2,11 +2,11 @@ package sources
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/Erik-Schuetze/go-get-a-job/internal/httpbody"
 	"github.com/Erik-Schuetze/go-get-a-job/internal/model"
 )
 
@@ -36,18 +36,20 @@ type SmartRecruiters struct {
 	Company     string
 	DisplayName string
 
-	BaseURL    string
-	HTTPClient *http.Client
+	BaseURL          string
+	HTTPClient       *http.Client
+	MaxResponseBytes int64
 }
 
 // NewSmartRecruiters builds a SmartRecruiters source for the given company
 // identifier and human-readable display name.
 func NewSmartRecruiters(company, displayName string) *SmartRecruiters {
 	return &SmartRecruiters{
-		Company:     company,
-		DisplayName: displayName,
-		BaseURL:     smartRecruitersDefaultBaseURL,
-		HTTPClient:  defaultHTTPClient(),
+		Company:          company,
+		DisplayName:      displayName,
+		BaseURL:          smartRecruitersDefaultBaseURL,
+		HTTPClient:       defaultHTTPClient(),
+		MaxResponseBytes: httpbody.MaxJSONBytes,
 	}
 }
 
@@ -120,7 +122,10 @@ func (s *SmartRecruiters) fetchList(ctx context.Context) ([]smartRecruitersListI
 	offset := 0
 
 	for {
-		url := fmt.Sprintf("%s/%s/postings?limit=%d&offset=%d", s.BaseURL, s.Company, smartRecruitersPageSize, offset)
+		url, err := buildURL(s.BaseURL, fmt.Sprintf("limit=%d&offset=%d", smartRecruitersPageSize, offset), s.Company, "postings")
+		if err != nil {
+			return nil, fmt.Errorf("smartrecruiters(%s): %w", s.Company, err)
+		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
@@ -133,15 +138,15 @@ func (s *SmartRecruiters) fetchList(ctx context.Context) ([]smartRecruitersListI
 		}
 
 		var parsed smartRecruitersListResponse
-		decErr := json.NewDecoder(resp.Body).Decode(&parsed)
+		decErr := httpbody.DecodeJSON(resp.Body, s.MaxResponseBytes, &parsed)
 		status := resp.StatusCode
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		if status != http.StatusOK {
 			return nil, fmt.Errorf("smartrecruiters(%s): unexpected status %d", s.Company, status)
 		}
 		if decErr != nil {
-			return nil, fmt.Errorf("smartrecruiters(%s): decoding list response: %w", s.Company, decErr)
+			return nil, fmt.Errorf("smartrecruiters(%s): reading list response: %w", s.Company, decErr)
 		}
 
 		all = append(all, parsed.Content...)
@@ -156,7 +161,13 @@ func (s *SmartRecruiters) fetchList(ctx context.Context) ([]smartRecruitersListI
 }
 
 func (s *SmartRecruiters) fetchDetail(ctx context.Context, item smartRecruitersListItem) (*model.Job, error) {
-	url := fmt.Sprintf("%s/%s/postings/%s", s.BaseURL, s.Company, item.ID)
+	// item.ID comes back from the list response, so it is untrusted input
+	// being placed in a path - encoded as a single segment so a value like
+	// "1/../../admin" can't become extra path components.
+	url, err := buildURL(s.BaseURL, "", s.Company, "postings", item.ID)
+	if err != nil {
+		return nil, fmt.Errorf("smartrecruiters(%s): %w", s.Company, err)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -167,15 +178,15 @@ func (s *SmartRecruiters) fetchDetail(ctx context.Context, item smartRecruitersL
 	if err != nil {
 		return nil, fmt.Errorf("smartrecruiters(%s): detail request failed for %s: %w", s.Company, item.ID, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("smartrecruiters(%s): unexpected detail status %d for %s", s.Company, resp.StatusCode, item.ID)
 	}
 
 	var detail smartRecruitersDetail
-	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
-		return nil, fmt.Errorf("smartrecruiters(%s): decoding detail for %s: %w", s.Company, item.ID, err)
+	if err := httpbody.DecodeJSON(resp.Body, s.MaxResponseBytes, &detail); err != nil {
+		return nil, fmt.Errorf("smartrecruiters(%s): reading detail for %s: %w", s.Company, item.ID, err)
 	}
 
 	var descParts []string

@@ -56,12 +56,16 @@ func run() int {
 		return 1
 	}
 
-	st, err := store.OpenSQLite(cfg.Store.Path)
+	st, err := store.OpenSQLite(ctx, cfg.Store.Path)
 	if err != nil {
 		logger.Error("opening store failed", "error", err)
 		return 1
 	}
-	defer st.Close()
+	defer func() {
+		if err := st.Close(); err != nil {
+			logger.Error("closing store failed", "error", err)
+		}
+	}()
 
 	var ntfyToken string
 	if cfg.Notify.Ntfy.TokenEnv != "" {
