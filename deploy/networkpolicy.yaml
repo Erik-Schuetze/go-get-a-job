@@ -1,0 +1,166 @@
+# NetworkPolicy for the go-get-a-job namespace.
+#
+# Before this file existed the namespace had no policy at all: every pod could
+# reach every other pod and the whole internet, and any pod could be reached
+# from anywhere in the cluster. This is a default-deny with narrowly-scoped
+# allows for the only three flows that actually need to exist.
+#
+# Two things to know before relying on this:
+#
+#   1. NetworkPolicy is fail-open. If the CNI plugin doesn't enforce it, these
+#      objects apply cleanly and do nothing. k3s ships kube-router's policy
+#      controller, so it should be active - but confirm with the checks in the
+#      README rather than assuming, and re-check after any CNI change.
+#      (`kubectl get pods -A | grep -iE 'cilium|calico|flannel|kube-router'`)
+#
+#   2. There are no FQDN rules here because they need Cilium. Egress is
+#      therefore scoped by port (443, plus DNS and in-namespace ntfy) rather
+#      than by destination hostname. If you later run Cilium, replacing the
+#      "externally reachable over HTTPS" block below with CiliumNetworkPolicy
+#      toFQDNs rules for the five ATS hosts + your AI provider is a genuine
+#      tightening - see the egress comment on the CronJob below.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: go-get-a-job
+spec:
+  # Applies to every pod in the namespace, including any added later.
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  # Deliberately no ingress/egress rules: everything is denied unless one of
+  # the allow policies below re-permits it.
+---
+# ntfy: the only pod in this namespace that accepts inbound connections.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ntfy-ingress
+  namespace: go-get-a-job
+spec:
+  podSelector:
+    matchLabels:
+      app: ntfy
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # The CronJob publishes notifications over the ClusterIP Service.
+        - podSelector:
+            matchLabels:
+              app: go-get-a-job
+        # The reverse proxy that publishes ntfy under a hostname lives in a
+        # different namespace, so a same-namespace-only rule here would
+        # silently break the public hostname while everything in this repo
+        # still looked healthy. "web" is the namespace the reference
+        # deployment uses; change this label if yours differs, or drop this
+        # entry entirely if ntfy is only ever reached from inside the
+        # cluster.
+        #
+        # Match on the namespace's automatic kubernetes.io/metadata.name label
+        # rather than a hand-managed one, so this keeps working without
+        # anyone having to remember to label the proxy's namespace.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: web
+      ports:
+        # 8080 is the container's actual listen port. Port 80 is the Service's
+        # port and is allowed as well so this keeps working regardless of
+        # whether the CNI evaluates the rule before or after service DNAT.
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 80
+---
+# ntfy has no reason to initiate any connection: it serves HTTP, stores its
+# state locally, and has no upstream configured. DNS is allowed only so name
+# resolution keeps working if you ever add one.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ntfy-egress
+  namespace: go-get-a-job
+spec:
+  podSelector:
+    matchLabels:
+      app: ntfy
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# The CronJob needs exactly three things: DNS, HTTPS to the job-board APIs and
+# the AI provider, and plain HTTP to the ntfy Service in this namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: go-get-a-job-egress
+  namespace: go-get-a-job
+spec:
+  podSelector:
+    matchLabels:
+      app: go-get-a-job
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # The five ATS APIs, the AI provider, and the TLS certificate
+    # infrastructure they depend on all live on public HTTPS endpoints with no
+    # stable published address range, so this is scoped by port rather than by
+    # destination. Adding a new source type or a different AI provider does
+    # not require touching this.
+    #
+    # Note the practical limit of this: a ConfigMap-edited ai.baseURL pointed
+    # at an attacker's own HTTPS endpoint would still be permitted. This rule
+    # bounds the damage (no arbitrary ports, no plaintext exfiltration) but it
+    # is not what stops that attack - the startup validation in
+    # internal/config is, plus restricting who may edit the ConfigMap. See the
+    # security section of the README.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        - ipBlock:
+            cidr: ::/0
+      ports:
+        - protocol: TCP
+          port: 443
+    # The in-namespace ntfy hop, which is plain HTTP by design (the Service is
+    # ClusterIP and this traffic never leaves the cluster) - see the transport
+    # section of the README. Both ports are listed for the same
+    # before/after-DNAT reason as the ingress rule above.
+    #
+    # If your CNI evaluates egress policy before service DNAT, the destination
+    # at evaluation time is ntfy's ClusterIP rather than the pod IP and this
+    # rule will not match; in that case add your cluster's service CIDR as an
+    # ipBlock here (k3s's default is 10.43.0.0/16, confirm with
+    # `kubectl get svc kubernetes -o jsonpath='{.spec.clusterIP}'`). Do not
+    # widen it to 0.0.0.0/0 - that would allow plaintext exfiltration to the
+    # internet.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ntfy
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 80

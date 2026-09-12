@@ -22,6 +22,12 @@ spec:
       # employers.
       activeDeadlineSeconds: 1800
       template:
+        metadata:
+          # Also selected by the NetworkPolicy in networkpolicy.yaml, so this
+          # label is load-bearing: removing or renaming it stops the CronJob
+          # from reaching ntfy (and the internet).
+          labels:
+            app: go-get-a-job
         spec:
           restartPolicy: Never
           # Nothing here talks to the Kubernetes API server, so don't project

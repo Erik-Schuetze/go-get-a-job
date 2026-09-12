@@ -1,4 +1,28 @@
+# Pod Security Admission for the go-get-a-job namespace.
+#
+# Before this label existed the namespace had no PSA policy at all, which
+# means the default ("privileged") applied: a root container with an
+# unrestricted seccomp profile and full capabilities would have been admitted
+# without comment. Both workloads in this namespace are already hardened to
+# satisfy "restricted" (non-root, no privilege escalation, all capabilities
+# dropped, RuntimeDefault seccomp), so enforcing it costs nothing here and
+# rejects that class of mistake later.
+#
+# Verify it actually engages rather than assuming the label is enough - a
+# typo'd label enforces nothing, silently. See the verification steps in the
+# README: a deliberately privileged pod in this namespace must be rejected.
+#
+# If a future workload genuinely cannot meet "restricted", downgrade `enforce`
+# to "baseline" and keep the warn/audit labels on "restricted" - that surfaces
+# the drift on every sync without blocking it.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: go-get-a-job
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
