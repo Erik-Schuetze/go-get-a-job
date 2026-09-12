@@ -6,7 +6,7 @@ CONFIG    ?= config/config.example.yaml
 # Tool versions are pinned here rather than in each workflow so that CI and
 # a local `make lint` / `make vuln` are guaranteed to run the same thing.
 GOLANGCI_LINT_VERSION := v2.13.2
-GOVULNCHECK_VERSION   := v1.1.4
+GOVULNCHECK_VERSION   := v1.8.0
 GOLANGCI_LINT         := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 GOVULNCHECK           := go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 
