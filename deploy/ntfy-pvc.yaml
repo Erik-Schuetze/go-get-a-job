@@ -1,0 +1,15 @@
+# Holds ntfy's own cache and auth (user/token) databases, so they survive
+# pod restarts. Block storage (Longhorn), matching the reasoning in
+# ../pvc.yaml.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ntfy-data
+  namespace: go-get-a-job
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 1Gi

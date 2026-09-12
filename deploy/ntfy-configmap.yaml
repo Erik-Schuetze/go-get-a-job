@@ -1,0 +1,20 @@
+# Self-hosted ntfy server config. `base-url` is only used inside ntfy's own
+# generated messages/links; update it once you expose ntfy externally
+# through your existing reverse-proxy + dynamic-DNS setup (whatever
+# hostname you choose to route to the ntfy-service Service below).
+#
+# auth-default-access "deny-all" means nobody can publish or subscribe
+# until a user/token exists - see README for the one-time setup command
+# (`ntfy user add` / `ntfy token add`, run once via kubectl exec).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ntfy-config
+  namespace: go-get-a-job
+data:
+  server.yml: |
+    base-url: "http://ntfy.go-get-a-job.svc.cluster.local"
+    listen-http: ":80"
+    cache-file: "/var/lib/ntfy/cache.db"
+    auth-file: "/var/lib/ntfy/auth.db"
+    auth-default-access: "deny-all"

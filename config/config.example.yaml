@@ -1,0 +1,110 @@
+# go-get-a-job example configuration.
+#
+# Copy this file, edit it for your own companies/preferences, and mount it
+# into the container at the path passed via --config (see deploy/configmap.yaml).
+# Nothing sensitive belongs in here — API keys and tokens are read from
+# environment variables (populated from a Kubernetes Secret), never from
+# this file.
+
+sources:
+  # Greenhouse, Lever, Ashby, and SmartRecruiters all expose free public
+  # JSON job-board APIs keyed by a company "board token"/slug — just the
+  # part of the company's own careers URL that identifies them. Find it by
+  # opening the company's careers page and looking at the URL, e.g.
+  # https://job-boards.greenhouse.io/grafanalabs -> company: grafanalabs
+  - type: greenhouse
+    company: grafanalabs
+    displayName: "Grafana Labs"
+  - type: greenhouse
+    company: gitlab
+    displayName: "GitLab"
+  - type: greenhouse
+    company: hashicorp
+    displayName: "HashiCorp"
+
+  # Workday has no single well-known API host, but the request shape is
+  # the same for every Workday customer. To onboard a new Workday company:
+  #   1. Open the company's real careers site in a browser with devtools
+  #      open (Network tab).
+  #   2. Search for any job title; find the XHR request to a URL like
+  #      https://<tenant>.wd###.myworkdayjobs.com/wday/cxs/<tenant>/<site>/jobs
+  #   3. host   = the full hostname from that URL (e.g. atlassian.wd3.myworkdayjobs.com)
+  #      tenant = the path segment right after /wday/cxs/ (e.g. atlassian)
+  #      site   = the path segment right after tenant (e.g. Atlassian) — case-sensitive
+  - type: workday
+    tenant: atlassian
+    host: atlassian.wd3.myworkdayjobs.com
+    site: Atlassian
+    displayName: "Atlassian"
+
+  # Not covered in v1 (no simple public API; would need bespoke/fragile
+  # scraping): Google (careers.google.com is a custom platform), SAP
+  # (SuccessFactors public job search has no open JSON endpoint), Apple
+  # (jobs.apple.com is a custom platform). Left here, commented out, as
+  # placeholders in case connectors are added later.
+  # - type: custom
+  #   displayName: "Google"
+  # - type: custom
+  #   displayName: "SAP"
+  # - type: custom
+  #   displayName: "Apple"
+
+filter:
+  # Cheap pre-filter: a job's title+description must match at least one of
+  # these (case-insensitive) before it's ever sent to the AI scorer. Keep
+  # this broad — it's just here to skip obviously-irrelevant postings
+  # cheaply; the AI profile below does the real relevance judgment.
+  keywords:
+    - "platform engineer"
+    - "platform engineering"
+    - "devops"
+    - "site reliability"
+    - "infrastructure engineer"
+    - "cloud engineer"
+    - "crossplane"
+    - "terraform"
+    - "kubernetes"
+    - "sre"
+
+  # Optional allow-list of location substrings. Leave empty ([]) to disable
+  # location filtering entirely.
+  locations:
+    - "Germany"
+    - "Remote"
+    - "EMEA"
+
+  # 0-1 relevance score threshold (from the AI scorer) required to trigger
+  # a notification.
+  minAIScore: 0.7
+
+ai:
+  provider: deepseek
+  # Name of the environment variable holding the DeepSeek API key. The key
+  # itself comes from a Kubernetes Secret at deploy time, never from this
+  # file.
+  apiKeyEnv: DEEPSEEK_API_KEY
+  baseURL: https://api.deepseek.com
+  model: deepseek-chat
+
+  # Free-text description of what you're looking for. Sent verbatim to the
+  # model alongside each candidate job — edit this any time to change what
+  # counts as a match, no code changes required.
+  profile: |
+    Platform/DevOps/SRE engineer based in Germany looking for roles centered
+    on Infrastructure-as-Code / Infrastructure-as-Data, especially
+    Crossplane, Terraform, Pulumi, or Kubernetes operators/controllers.
+    Open to remote or Germany/EU-based roles. Especially interested in
+    developer-tools, observability, and cloud-infrastructure companies.
+
+notify:
+  type: ntfy
+  ntfy:
+    url: http://ntfy.go-get-a-job.svc.cluster.local
+    topic: job-matches
+    # Optional: name of the environment variable holding an ntfy access
+    # token, if your topic/server requires auth (recommended).
+    tokenEnv: NTFY_TOKEN
+
+store:
+  type: sqlite
+  path: /data/go-get-a-job.db

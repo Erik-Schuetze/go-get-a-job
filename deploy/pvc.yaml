@@ -1,0 +1,16 @@
+# Block-storage (Longhorn), not a network filesystem: SQLite's own docs
+# warn against using it over NFS-style mounts due to file-locking
+# reliability. ReadWriteOnce is fine since only one go-get-a-job Job pod runs
+# at a time (see cronjob.yaml's concurrencyPolicy: Forbid).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: go-get-a-job-data
+  namespace: go-get-a-job
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 1Gi

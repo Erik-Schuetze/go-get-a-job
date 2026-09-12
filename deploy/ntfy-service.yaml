@@ -1,0 +1,18 @@
+# ClusterIP by default: go-get-a-job reaches ntfy at
+# http://ntfy.go-get-a-job.svc.cluster.local, and your own phone/desktop can
+# reach it via `kubectl port-forward` for local testing. For real push
+# notifications away from home, route a hostname to this Service through
+# your existing reverse-proxy setup (no change needed here to support that
+# - just point your proxy's backend at this Service).
+apiVersion: v1
+kind: Service
+metadata:
+  name: ntfy
+  namespace: go-get-a-job
+spec:
+  selector:
+    app: ntfy
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

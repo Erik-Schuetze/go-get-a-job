@@ -1,0 +1,74 @@
+# Runs one fetch-filter-score-notify pass per schedule tick. Adjust
+# `schedule` freely - jobs typically stay open for weeks, so once/day is a
+# reasonable starting point; there's no need to poll more often unless you
+# want tighter latency on "brand new posting" notifications.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: go-get-a-job
+  namespace: go-get-a-job
+spec:
+  schedule: "0 6 * * *" # daily at 06:00 (cluster timezone)
+  concurrencyPolicy: Forbid # never run two passes at once against the same SQLite file
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      # Generous: a company with an unusually large Workday/SmartRecruiters
+      # board needs one detail-fetch HTTP call per open posting (see
+      # internal/sources), which can take a few minutes for very large
+      # employers.
+      activeDeadlineSeconds: 1800
+      template:
+        spec:
+          restartPolicy: Never
+          # Matches the distroless "nonroot" base image's fixed UID/GID.
+          # fsGroup is required so the mounted PVC is actually writable by
+          # that UID - without it, SQLite can't create its database file
+          # (verified while building this manifest).
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+          containers:
+            - name: go-get-a-job
+              # Build from the Dockerfile in this repo and push to a
+              # registry your cluster can pull from, then update this to
+              # that image reference (e.g. ghcr.io/you/go-get-a-job:v1).
+              image: go-get-a-job:latest
+              args: ["--config", "/etc/go-get-a-job/config.yaml"]
+              envFrom:
+                - secretRef:
+                    name: go-get-a-job-secrets
+              volumeMounts:
+                - name: config
+                  mountPath: /etc/go-get-a-job
+                  readOnly: true
+                - name: data
+                  mountPath: /data
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+          volumes:
+            - name: config
+              configMap:
+                name: go-get-a-job-config
+            - name: data
+              persistentVolumeClaim:
+                claimName: go-get-a-job-data
+            - name: tmp
+              emptyDir: {}

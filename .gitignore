@@ -1,0 +1,21 @@
+# Build artifacts
+/bin/
+/dist/
+/go-get-a-job
+
+# Local data / secrets
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+deploy/secret.yaml
+.env
+
+# IDE / OS
+.idea/
+.DS_Store
+*.iml
+
+# Go
+*.test
+*.out

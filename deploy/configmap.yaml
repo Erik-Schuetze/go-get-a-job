@@ -1,0 +1,70 @@
+# Non-secret go-get-a-job configuration, mounted into the CronJob at
+# /etc/go-get-a-job/config.yaml (see cronjob.yaml). Edit the "sources",
+# "filter", and "ai.profile" sections to change which companies are
+# watched and what counts as a match - no image rebuild required, just
+# `kubectl apply` this file again (the CronJob picks up the new ConfigMap
+# content on its next scheduled run).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: go-get-a-job-config
+  namespace: go-get-a-job
+data:
+  config.yaml: |
+    sources:
+      - type: greenhouse
+        company: grafanalabs
+        displayName: "Grafana Labs"
+      - type: greenhouse
+        company: gitlab
+        displayName: "GitLab"
+      - type: greenhouse
+        company: hashicorp
+        displayName: "HashiCorp"
+      - type: workday
+        tenant: atlassian
+        host: atlassian.wd3.myworkdayjobs.com
+        site: Atlassian
+        displayName: "Atlassian"
+
+    filter:
+      keywords:
+        - "platform engineer"
+        - "platform engineering"
+        - "devops"
+        - "site reliability"
+        - "infrastructure engineer"
+        - "cloud engineer"
+        - "crossplane"
+        - "terraform"
+        - "kubernetes"
+        - "sre"
+      locations:
+        - "Germany"
+        - "Remote"
+        - "EMEA"
+      minAIScore: 0.7
+
+    ai:
+      provider: deepseek
+      apiKeyEnv: DEEPSEEK_API_KEY
+      baseURL: https://api.deepseek.com
+      model: deepseek-chat
+      profile: |
+        Platform/DevOps/SRE engineer based in Germany looking for roles
+        centered on Infrastructure-as-Code / Infrastructure-as-Data,
+        especially Crossplane, Terraform, Pulumi, or Kubernetes
+        operators/controllers. Open to remote or Germany/EU-based roles.
+        Especially interested in developer-tools, observability, and
+        cloud-infrastructure companies.
+
+    notify:
+      type: ntfy
+      ntfy:
+        url: http://ntfy.go-get-a-job.svc.cluster.local
+        topic: job-matches
+        tokenEnv: NTFY_TOKEN
+
+    store:
+      type: sqlite
+      path: /data/go-get-a-job.db
