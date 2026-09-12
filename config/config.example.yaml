@@ -18,40 +18,24 @@ sources:
   - type: greenhouse
     company: gitlab
     displayName: "GitLab"
-
-  # HashiCorp and Atlassian used to be listed here; both are unreachable
-  # with any connector this project has, and in practice only ever
-  # produced one "source fetch failed" log line per run:
-  #   - HashiCorp: its Greenhouse board ("hashicorp") has been retired -
-  #     boards.greenhouse.io/hashicorp now 301s to a 404. HashiCorp hires
-  #     through IBM's careers site, which exposes no public JSON API this
-  #     project can read.
-  #   - Atlassian: their Workday tenant (atlassian.wd5.myworkdayjobs.com,
-  #     also reachable as atlassian.wd3) answers every anonymous
-  #     /wday/cxs/... request with 401 "Unable to verify credentials for
-  #     system account", for every site slug - so it is not scrapeable the
-  #     way a normal public Workday board is.
-  # See "Verifying a board before you add it" in the README before adding
-  # a company here: a wrong board fails per-run rather than loudly.
+  - type: greenhouse
+    company: hashicorp
+    displayName: "HashiCorp"
 
   # Workday has no single well-known API host, but the request shape is
-  # the same for every Workday customer that allows anonymous reads. To
-  # onboard a new Workday company:
+  # the same for every Workday customer. To onboard a new Workday company:
   #   1. Open the company's real careers site in a browser with devtools
   #      open (Network tab).
   #   2. Search for any job title; find the XHR request to a URL like
   #      https://<tenant>.wd###.myworkdayjobs.com/wday/cxs/<tenant>/<site>/jobs
-  #   3. host   = the full hostname from that URL
-  #      tenant = the path segment right after /wday/cxs/
-  #      site   = the path segment right after tenant (case-sensitive)
-  # The values below are NVIDIA's real, verified-working board (a 200 with
-  # a populated jobPostings array) - uncomment them to watch NVIDIA, or
-  # replace them with your own tenant/site from step 2.
-  # - type: workday
-  #   tenant: nvidia
-  #   host: nvidia.wd5.myworkdayjobs.com
-  #   site: NVIDIAExternalCareerSite
-  #   displayName: "NVIDIA"
+  #   3. host   = the full hostname from that URL (e.g. atlassian.wd3.myworkdayjobs.com)
+  #      tenant = the path segment right after /wday/cxs/ (e.g. atlassian)
+  #      site   = the path segment right after tenant (e.g. Atlassian) — case-sensitive
+  - type: workday
+    tenant: atlassian
+    host: atlassian.wd3.myworkdayjobs.com
+    site: Atlassian
+    displayName: "Atlassian"
 
   # Not covered in v1 (no simple public API; would need bespoke/fragile
   # scraping): Google (careers.google.com is a custom platform), SAP
