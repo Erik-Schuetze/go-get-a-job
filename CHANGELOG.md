@@ -1,3 +1,95 @@
+## [0.5.0] - 2026-09-13
+
+The notification is the only part of this program anyone actually reads, and it
+was the least considered: a fixed briefcase icon, a location on its own labelled
+line, and a score that only existed as prose. It is now built around what a
+collapsed phone notification shows. Location also stops being a scoring input,
+which is the part that can change what you are told about.
+
+### Breaking
+
+- **Location is answered in `locationOk`, not by lowering the score.** The
+  scorer returns it as its own field, and a `false` saves the posting without
+  notifying you. This matters for an existing config: `ai.instructions` or
+  `ai.profile` text that says "score it 0.2 or below" for a location now
+  **contradicts** the fixed prompt, which says a location constraint may never
+  move the score. Operator text is appended after the contract, so it wins by
+  position - whichever rule the model settles on per posting, the outcome is
+  undefined. Rewrite such rules to use `locationOk`:
+
+  ```yaml
+  ai:
+    instructions: |
+      Requires being based outside Germany, or relocating out of it ->
+      locationOk: false. The score is unaffected either way.
+  ```
+
+  Why: a rule phrased as a score makes "wrong job" and "right job, wrong
+  country" arrive looking identical, which is exactly the notification you
+  cannot act on.
+- **`locationOk` is absent-safe, deliberately.** A `false` is only read from an
+  explicit `false`; a missing, null, or malformed field means OK. A plain
+  boolean would decode to `false` on an omitted field, so one truncated reply
+  would silently discard the posting - the missed-opening failure this tool
+  exists to prevent.
+
+### Added
+
+- **`notify.ntfy.matchTiers`, so the emoji is the score.** Score bands map to an
+  emoji and an ntfy priority, which makes the list skimmable without opening
+  anything. Clients expose one notification channel per priority, so the low
+  tiers can be muted while the top one still rings. Omit the block and the
+  defaults apply, so an existing config is unaffected:
+
+  ```yaml
+  notify:
+    ntfy:
+      matchTiers:
+        - minScore: 0.95
+          emoji: "💎"
+          priority: 5
+        - minScore: 0.85
+          emoji: "⭐"
+          priority: 4
+        - emoji: "💼"          # catch-all; minScore intentionally absent
+          priority: 3
+  ```
+
+  Tiers are matched top-down, so they are listed highest-first and the last
+  entry must omit `minScore`. A tier whose `minScore` is below
+  `filter.minAIScore` can never be reached, which is a warning at startup rather
+  than an error - the only other symptom would be an emoji that never arrives.
+- **The location is in the notification title**, where a collapsed notification
+  shows it: `💎 Grafana Labs: Platform Engineer · Germany`.
+- **A metadata line, from data every connector was already fetching and
+  discarding.** `Department`, `WorkplaceType` and `EmploymentType` from the
+  board, `PostedAt` as `Posted 6 days ago`, and the `signals[]` the scorer was
+  already returning and the notifier was throwing away, rendered as
+  `Matched: Crossplane, Terraform`. A field a board does not publish is omitted
+  rather than rendered as `N/A`.
+
+### Changed
+
+- **The company is now a filterable tag instead of an icon.** ntfy turns a tag
+  matching an emoji short code into an emoji *prepended to the title*, so the
+  old `Tags: briefcase` header was the only reason 💼 ever appeared - and
+  keeping it alongside a tier emoji would put two emoji on every notification.
+  The company slug (`grafana_labs`) matches no short code and renders as a
+  filterable label underneath instead. The slug is sanitized rather than
+  cosmetic: only `[a-z0-9_]` is emitted, so a comma in `Solo.io, Inc` cannot
+  split the `Tags` header into two tags.
+- **Title truncation reserves the location before cutting the title.** The
+  location suffix is budgeted for up front, and the 3-rune `...` marker is part
+  of that budget. Truncating the assembled string instead deletes the location -
+  but only on long titles, which is the worst way for it to fail.
+- **Greenhouse departments are decoded.** `departments[].name` had no decoding
+  at all, so the field was never populated for any Greenhouse board. Ashby,
+  Lever, Workable, Personio, Teamtailor, SmartRecruiters and Recruitee now
+  populate the same fields from their own responses.
+- **A vetoed posting is counted.** Drops are reported as `vetoed_by_location` in
+  the run summary and the run-complete log line, because a drop with no trace
+  cannot be told apart from a posting the watcher never saw.
+
 ## [0.4.0] - 2026-09-13
 
 Two themes: **reach more employers** (four new connectors) and **notice when one
@@ -234,7 +326,8 @@ Both are fixed.
   were accepted and notified about under the old rules are not re-scored or
   withdrawn.
 
-[Unreleased]: https://github.com/Erik-Schuetze/go-get-a-job/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Erik-Schuetze/go-get-a-job/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Erik-Schuetze/go-get-a-job/releases/tag/v0.5.0
 [0.4.0]: https://github.com/Erik-Schuetze/go-get-a-job/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Erik-Schuetze/go-get-a-job/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Erik-Schuetze/go-get-a-job/releases/tag/v0.2.0
