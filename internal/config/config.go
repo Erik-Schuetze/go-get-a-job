@@ -79,14 +79,17 @@ type GuardConfig struct {
 // required depends on Type; see Validate.
 type SourceConfig struct {
 	// Type selects the connector: "greenhouse", "lever", "ashby",
-	// "smartrecruiters", or "workday".
+	// "smartrecruiters", "workday", "personio", "recruitee", "teamtailor",
+	// or "workable".
 	Type string `yaml:"type"`
 
 	// DisplayName is shown in notifications and logs, e.g. "Grafana Labs".
 	DisplayName string `yaml:"displayName"`
 
-	// Company is the board token/company slug used by Greenhouse, Lever,
-	// Ashby, and SmartRecruiters (e.g. "grafanalabs").
+	// Company is the board token/company slug used by every connector other
+	// than Workday (e.g. "grafanalabs" for Greenhouse; for Personio,
+	// Recruitee, and Teamtailor it is the company subdomain, and for
+	// Workable it is the account slug in the apply.workable.com URL).
 	Company string `yaml:"company,omitempty"`
 
 	// Tenant, Host, and Site are used only by the Workday connector, since
@@ -443,6 +446,10 @@ var validSourceTypes = map[string]bool{
 	"ashby":           true,
 	"smartrecruiters": true,
 	"workday":         true,
+	"personio":        true,
+	"recruitee":       true,
+	"teamtailor":      true,
+	"workable":        true,
 }
 
 // Validate checks the config for missing/inconsistent required fields. It

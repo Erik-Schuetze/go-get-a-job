@@ -1,13 +1,85 @@
-# Changelog
-
-All notable changes to this project are documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
-as described in "Versioning and releases" in the README. The config file schema
-is the public API that version numbers speak to.
-
 ## [Unreleased]
+
+### Added
+
+- **Four more connectors: Personio, Recruitee, Teamtailor, and Workable.**
+  Every one is a config-only addition - `type:` plus `company:` - and all four
+  were verified against live boards (Contabo, xneelo, Spacelift, Hugging Face).
+  Personio matters most for a Germany-based search, since it is the ATS many
+  mid-size German employers use; its feed is XML rather than JSON, so it is the
+  first connector that does not use the shared JSON decoder.
+- **Personio reports a wrong company name as what it is.** An unknown Personio
+  company does not 404: it redirects to Personio's own marketing site, so the
+  body is HTML and decoding it as XML yields an error that reads like a schema
+  change. The connector checks for the feed's root element first and says
+  "wrong company subdomain, or the board moved" instead.
+- **A shared outbound HTTP client that identifies the tool and paces itself**
+  (`internal/httpclient`). Every connector now sends
+  `User-Agent: go-get-a-job (+https://github.com/Erik-Schuetze/go-get-a-job)`,
+  keeps at least 250ms between requests (globally, so a concurrent per-posting
+  fan-out is serialized rather than able to arrive as a burst), obeys a `429`
+  or `503` by waiting out its `Retry-After` (capped at 30s) for up to two
+  retries, and refuses to exceed 10,000 requests in a run. These hosts are
+  other people's infrastructure, published for browsers rather than for a
+  polling client; the pacing is what keeps a wide fan-out on a large board from
+  being indistinguishable from a small flood. See "Request etiquette" in the
+  README.
+- **A `guard:` config block, and a warning when a configured board stops
+  returning postings.** Every successful fetch is recorded per source, and a
+  source that has returned nothing for `deadSourceRuns` consecutive runs
+  (default **14**) produces one `ntfy` warning - repeated every further
+  `deadSourceRuns` runs while it stays silent, not on every run. The point is a
+  silent failure mode: a board that is renamed, migrated to another ATS, or
+  starts rejecting anonymous requests returns a *successful* empty list at
+  several providers, which looks exactly like a company that has stopped
+  hiring. `minRequestIntervalMs` and `maxRequestsPerRun` are now set from
+  config too, rather than being compile-time constants.
+- **A `-validate` flag**, which fetches every configured source once, prints
+  per-source health (fetch errors, empty boards, postings missing an ID or
+  title), and exits non-zero if any source looks unhealthy. No AI calls, no
+  database, no notifications. It exists because a wrong board slug is
+  otherwise silent: SmartRecruiters answers *any* slug with
+  `200 {"totalFound":0}`, so a typo there is indistinguishable from an idle
+  board in the logs of a normal run. See "Verifying a board before you add it"
+  in the README.
+
+### Changed
+
+- **Teamtailor postings are located by their title when that is the only place
+  they say it.** Teamtailor boards routinely file a "Remote, European Union"
+  role under the company's registered office and emit no other signal - neither
+  `jobLocationType` nor `applicantLocationRequirements` was present on any
+  posting checked. Read alone, `jobLocation` labelled exactly those roles
+  "Warsaw, PL", so a Germany-scoped `accept` list would have rejected the
+  postings most worth finding. The trailing remote parenthetical in the title
+  is now part of `Location`, ahead of the structured place.
+- **Recruitee and Workable locations are de-duplicated by segment.**
+  Recruitee spreads location over three overlapping fields (`location` is
+  usually "City, Country" while `city` and `country` repeat its halves), so
+  rendering them naively produced "Leipzig, Germany, Leipzig, Germany" and let
+  a single `accept` entry match twice.
+- **`Source` gained a `Label()` method** (`greenhouse/grafanalabs`,
+  `workday/suse/Jobsatsuse`, ...), distinct from `Name()`, which stays the
+  connector type. A config watching six Greenhouse boards is six sources with
+  one `Name()`, so per-source state keyed on `Name()` would merge their
+  histories and let five healthy boards mask a sixth that had gone quiet. This
+  is an interface change for anyone implementing a connector outside this repo;
+  the shipped connectors all implement it.
+- **Only successful fetches count toward the dead-source streak.** A failed
+  fetch is already reported per-source, and counting it would let one flaky
+  network day push a healthy board toward a false alarm - precisely the warning
+  an operator learns to ignore.
+
+### Fixed
+
+- **A run that failed partially now exits non-zero.** `main` returned `0`
+  unless *every* source failed, so a cron run in which several sources errored
+  looked successful to `kubectl` and to any future alerting on the job status.
+  A source error or a post-processing error now exits `1`; the "run failed"
+  notification is still reserved for a total failure, so a single flaky board
+  does not page.
+
+## [0.3.0] - 2026-09-12
 
 ### Breaking
 
@@ -50,17 +122,6 @@ is the public API that version numbers speak to.
   Listing adjacent titles (`sre`, `devops`) widens the net without lowering the
   bar, because how much a posting is wanted is expressed in `ai.profile`. No
   schema or matching change.
-- **`Source` gained a `Label()` method** (`greenhouse/grafanalabs`,
-  `workday/suse/Jobsatsuse`, ...), distinct from `Name()`, which stays the
-  connector type. A config watching six Greenhouse boards is six sources with
-  one `Name()`, so per-source state keyed on `Name()` would merge their
-  histories and let five healthy boards mask a sixth that had gone quiet. This
-  is an interface change for anyone implementing a connector outside this repo;
-  the shipped connectors all implement it.
-- **Only successful fetches count toward the dead-source streak.** A failed
-  fetch is already reported per-source, and counting it would let one flaky
-  network day push a healthy board toward a false alarm - precisely the warning
-  an operator learns to ignore.
 
 ### Added
 
@@ -68,47 +129,10 @@ is the public API that version numbers speak to.
   says nothing about a country reaches the scorer in any phrasing, with the
   deciding marker recorded as the filter's `Rule` in the debug log and the
   end-of-run sample.
+
 - **`config/config.example.yaml` and `deploy/configmap.example.yaml`** document
   the new `accept` shape and the recall-versus-precision split between
   `filter.keywords` and `ai.profile`.
-- **A shared outbound HTTP client that identifies the tool and paces itself**
-  (`internal/httpclient`). Every connector now sends
-  `User-Agent: go-get-a-job (+https://github.com/Erik-Schuetze/go-get-a-job)`,
-  keeps at least 250ms between requests (globally, so a concurrent per-posting
-  fan-out is serialized rather than able to arrive as a burst), obeys a `429`
-  or `503` by waiting out its `Retry-After` (capped at 30s) for up to two
-  retries, and refuses to exceed 10,000 requests in a run. These hosts are
-  other people's infrastructure, published for browsers rather than for a
-  polling client; the pacing is what keeps a wide fan-out on a large board from
-  being indistinguishable from a small flood. See "Request etiquette" in the
-  README.
-- **A `guard:` config block, and a warning when a configured board stops
-  returning postings.** Every successful fetch is recorded per source, and a
-  source that has returned nothing for `deadSourceRuns` consecutive runs
-  (default **14**) produces one `ntfy` warning - repeated every further
-  `deadSourceRuns` runs while it stays silent, not on every run. The point is a
-  silent failure mode: a board that is renamed, migrated to another ATS, or
-  starts rejecting anonymous requests returns a *successful* empty list at
-  several providers, which looks exactly like a company that has stopped
-  hiring. `minRequestIntervalMs` and `maxRequestsPerRun` are now set from
-  config too, rather than being compile-time constants.
-- **A `-validate` flag**, which fetches every configured source once, prints
-  per-source health (fetch errors, empty boards, postings missing an ID or
-  title), and exits non-zero if any source looks unhealthy. No AI calls, no
-  database, no notifications. It exists because a wrong board slug is
-  otherwise silent: SmartRecruiters answers *any* slug with
-  `200 {"totalFound":0}`, so a typo there is indistinguishable from an idle
-  board in the logs of a normal run. See "Verifying a board before you add it"
-  in the README.
-
-### Fixed
-
-- **A run that failed partially now exits non-zero.** `main` returned `0`
-  unless *every* source failed, so a cron run in which several sources errored
-  looked successful to `kubectl` and to any future alerting on the job status.
-  A source error or a post-processing error now exits `1`; the "run failed"
-  notification is still reserved for a total failure, so a single flaky board
-  does not page.
 
 ## [0.2.0] - 2026-09-12
 
@@ -206,5 +230,6 @@ Both are fixed.
   were accepted and notified about under the old rules are not re-scored or
   withdrawn.
 
-[Unreleased]: https://github.com/Erik-Schuetze/go-get-a-job/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Erik-Schuetze/go-get-a-job/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Erik-Schuetze/go-get-a-job/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Erik-Schuetze/go-get-a-job/releases/tag/v0.2.0
