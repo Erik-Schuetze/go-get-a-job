@@ -32,6 +32,7 @@ func main() {
 func run() int {
 	configPath := flag.String("config", "config.yaml", "path to the go-get-a-job YAML config file")
 	logLevel := flag.String("log-level", "info", "log verbosity: debug, info, warn, or error")
+	validate := flag.Bool("validate", false, "check every configured source is reachable and returns usable postings, then exit without scoring or notifying")
 	flag.Parse()
 
 	level, err := parseLogLevel(*logLevel)
@@ -52,15 +53,27 @@ func run() int {
 		return 1
 	}
 
-	apiKey := os.Getenv(cfg.AI.APIKeyEnv)
-	if apiKey == "" {
-		logger.Error("AI API key not set", "env_var", cfg.AI.APIKeyEnv)
+	if err := sources.ConfigureFromConfig(*cfg); err != nil {
+		logger.Error("configuring outbound HTTP client failed", "error", err)
 		return 1
 	}
 
 	src, err := sources.BuildAll(cfg.Sources)
 	if err != nil {
 		logger.Error("building sources failed", "error", err)
+		return 1
+	}
+
+	if *validate {
+		if !sources.Validate(ctx, logger, src) {
+			return 1
+		}
+		return 0
+	}
+
+	apiKey := os.Getenv(cfg.AI.APIKeyEnv)
+	if apiKey == "" {
+		logger.Error("AI API key not set", "env_var", cfg.AI.APIKeyEnv)
 		return 1
 	}
 
@@ -91,16 +104,30 @@ func run() int {
 		Scorer:   scorer,
 		Store:    st,
 		Notifier: notifier,
+		Guard:    cfg.Guard,
 		Logger:   logger,
 	}
 
 	summary := r.Run(ctx)
 
-	if summary.AllSourcesFailed(len(src)) {
-		runErr := errors.Join(summary.SourceErrors...)
-		logger.Error("every source failed to fetch; this run found nothing", "error", runErr)
-		if notifyErr := notifier.NotifyFailure(ctx, fmt.Errorf("go-get-a-job: all %d source(s) failed: %w", len(src), runErr)); notifyErr != nil {
-			logger.Error("also failed to send failure notification", "error", notifyErr)
+	// Any error means part of the pipeline didn't run, so the exit code has
+	// to be nonzero for all of them, not just the total-failure case. The
+	// CronJob's success/failure history is the only signal that survives the
+	// logs being rotated away, so it must not report success for a run that
+	// quietly lost half its sources.
+	if len(summary.SourceErrors) > 0 || len(summary.ProcessErrors) > 0 {
+		runErr := errors.Join(append(append([]error{}, summary.SourceErrors...), summary.ProcessErrors...)...)
+		logger.Error("run finished with errors",
+			"source_errors", len(summary.SourceErrors),
+			"process_errors", len(summary.ProcessErrors),
+		)
+		// Only a total source wipe-out is worth waking the operator for
+		// immediately; partial failures are already visible as an error
+		// exit code, and a notification per flaky board would be noise.
+		if summary.AllSourcesFailed(len(src)) {
+			if notifyErr := notifier.NotifyFailure(ctx, fmt.Errorf("go-get-a-job: all %d source(s) failed: %w", len(src), runErr)); notifyErr != nil {
+				logger.Error("also failed to send failure notification", "error", notifyErr)
+			}
 		}
 		return 1
 	}

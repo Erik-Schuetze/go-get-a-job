@@ -39,6 +39,8 @@ func NewLever(company, displayName string) *Lever {
 
 func (l *Lever) Name() string { return "lever" }
 
+func (l *Lever) Label() string { return "lever/" + l.Company }
+
 type leverPosting struct {
 	ID               string          `json:"id"`
 	Text             string          `json:"text"`

@@ -64,6 +64,10 @@ func NewWorkday(tenant, host, site, displayName string) *Workday {
 
 func (w *Workday) Name() string { return "workday" }
 
+// Label includes the site because one Workday tenant can host several
+// distinct job boards, and they fail independently.
+func (w *Workday) Label() string { return "workday/" + w.Tenant + "/" + w.Site }
+
 func (w *Workday) jobsURL() (string, error) {
 	return buildURL("https://"+w.Host, "", "wday", "cxs", w.Tenant, w.Site, "jobs")
 }

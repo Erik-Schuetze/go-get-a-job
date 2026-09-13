@@ -50,6 +50,17 @@ is the public API that version numbers speak to.
   Listing adjacent titles (`sre`, `devops`) widens the net without lowering the
   bar, because how much a posting is wanted is expressed in `ai.profile`. No
   schema or matching change.
+- **`Source` gained a `Label()` method** (`greenhouse/grafanalabs`,
+  `workday/suse/Jobsatsuse`, ...), distinct from `Name()`, which stays the
+  connector type. A config watching six Greenhouse boards is six sources with
+  one `Name()`, so per-source state keyed on `Name()` would merge their
+  histories and let five healthy boards mask a sixth that had gone quiet. This
+  is an interface change for anyone implementing a connector outside this repo;
+  the shipped connectors all implement it.
+- **Only successful fetches count toward the dead-source streak.** A failed
+  fetch is already reported per-source, and counting it would let one flaky
+  network day push a healthy board toward a false alarm - precisely the warning
+  an operator learns to ignore.
 
 ### Added
 
@@ -71,6 +82,33 @@ is the public API that version numbers speak to.
   polling client; the pacing is what keeps a wide fan-out on a large board from
   being indistinguishable from a small flood. See "Request etiquette" in the
   README.
+- **A `guard:` config block, and a warning when a configured board stops
+  returning postings.** Every successful fetch is recorded per source, and a
+  source that has returned nothing for `deadSourceRuns` consecutive runs
+  (default **14**) produces one `ntfy` warning - repeated every further
+  `deadSourceRuns` runs while it stays silent, not on every run. The point is a
+  silent failure mode: a board that is renamed, migrated to another ATS, or
+  starts rejecting anonymous requests returns a *successful* empty list at
+  several providers, which looks exactly like a company that has stopped
+  hiring. `minRequestIntervalMs` and `maxRequestsPerRun` are now set from
+  config too, rather than being compile-time constants.
+- **A `-validate` flag**, which fetches every configured source once, prints
+  per-source health (fetch errors, empty boards, postings missing an ID or
+  title), and exits non-zero if any source looks unhealthy. No AI calls, no
+  database, no notifications. It exists because a wrong board slug is
+  otherwise silent: SmartRecruiters answers *any* slug with
+  `200 {"totalFound":0}`, so a typo there is indistinguishable from an idle
+  board in the logs of a normal run. See "Verifying a board before you add it"
+  in the README.
+
+### Fixed
+
+- **A run that failed partially now exits non-zero.** `main` returned `0`
+  unless *every* source failed, so a cron run in which several sources errored
+  looked successful to `kubectl` and to any future alerting on the job status.
+  A source error or a post-processing error now exits `1`; the "run failed"
+  notification is still reserved for a total failure, so a single flaky board
+  does not page.
 
 ## [0.2.0] - 2026-09-12
 

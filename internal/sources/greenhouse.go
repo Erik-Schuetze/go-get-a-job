@@ -45,6 +45,8 @@ func NewGreenhouse(company, displayName string) *Greenhouse {
 
 func (g *Greenhouse) Name() string { return "greenhouse" }
 
+func (g *Greenhouse) Label() string { return "greenhouse/" + g.Company }
+
 type greenhouseResponse struct {
 	Jobs []greenhouseJob `json:"jobs"`
 }

@@ -98,6 +98,23 @@ func (n *Ntfy) NotifyFailure(ctx context.Context, runErr error) error {
 	return n.publish(ctx, sanitize.MultiLine(runErr.Error(), maxBodyChars), headers)
 }
 
+// NotifyWarning publishes a low-noise alert about a successful run that
+// nonetheless needs attention, such as a source that has stopped returning
+// postings.
+//
+// The title is prefixed so the message is differentiable from a job match at a
+// glance in the notification list - the operator's phone shows the title first,
+// and a "warning"-titled message must never be mistaken for a posting worth
+// applying to. The tag and priority reinforce that in clients that render them.
+func (n *Ntfy) NotifyWarning(ctx context.Context, title, body string) error {
+	headers := map[string]string{
+		"Title":    sanitize.SingleLine("go-get-a-job warning: "+title, maxTitleChars),
+		"Priority": "default",
+		"Tags":     "warning",
+	}
+	return n.publish(ctx, sanitize.MultiLine(body, maxBodyChars), headers)
+}
+
 func (n *Ntfy) publish(ctx context.Context, body string, headers map[string]string) error {
 	// The topic is interpolated into the path, so escape it rather than
 	// letting a slash or query character in the configured value define a

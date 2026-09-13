@@ -98,3 +98,12 @@ data:
     store:
       type: sqlite
       path: /data/go-get-a-job.db
+
+    guard:
+      # See config/config.example.yaml for the full explanation. Short version:
+      # warn if a source has returned no postings for this many consecutive
+      # successful runs (repeat every N runs while it stays silent), and cap how
+      # hard a single run may hit other people's servers.
+      deadSourceRuns: 14
+      minRequestIntervalMs: 250
+      maxRequestsPerRun: 10000

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,6 +24,14 @@ CREATE TABLE IF NOT EXISTS jobs (
 	ai_score      REAL NOT NULL DEFAULT 0,
 	ai_reason     TEXT,
 	notified_at   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS source_health (
+	source                TEXT PRIMARY KEY,
+	consecutive_zero_runs INTEGER NOT NULL DEFAULT 0,
+	last_job_count        INTEGER NOT NULL DEFAULT 0,
+	last_fetch_at         TEXT NOT NULL,
+	last_non_empty_at     TEXT
 );
 `
 
@@ -180,6 +189,106 @@ func (s *SQLiteStore) Get(ctx context.Context, jobID string) (Record, bool, erro
 		}
 	}
 	return rec, true, nil
+}
+
+// RecordSourceFetch records the result of one successful fetch of one source
+// and returns the health afterwards.
+//
+// The read and the write share one transaction so two sources fetched
+// concurrently cannot each read the same "previous streak" and both write
+// the same next value. (The runner happens to fetch sources sequentially
+// today, but the streak is stored state, and a lost update here would mean a
+// dead board never crossing the alert threshold.)
+func (s *SQLiteStore) RecordSourceFetch(ctx context.Context, source string, jobCount int, at time.Time) (SourceHealth, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return SourceHealth{}, fmt.Errorf("recording fetch for %q: %w", source, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// A source with no row yet is treated as a streak of zero, which makes
+	// a first-ever fetch of an empty board count as run one rather than
+	// silently consuming an extra run before the guard notices.
+	prev := 0
+	var prevNonEmpty sql.NullString
+	err = tx.QueryRowContext(ctx,
+		`SELECT consecutive_zero_runs, last_non_empty_at FROM source_health WHERE source = ?`, source).
+		Scan(&prev, &prevNonEmpty)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		prev = 0
+		prevNonEmpty = sql.NullString{}
+	case err != nil:
+		return SourceHealth{}, fmt.Errorf("reading health for %q: %w", source, err)
+	}
+
+	next := prev
+	if jobCount == 0 {
+		next++
+	} else {
+		next = 0
+	}
+
+	// Only a non-empty fetch moves the "last seen postings" timestamp; an
+	// empty one must leave it alone, since it is the anchor the warning
+	// reports.
+	nonEmptyAt := prevNonEmpty
+	if jobCount > 0 {
+		nonEmptyAt = sql.NullString{String: formatTime(at), Valid: true}
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO source_health (source, consecutive_zero_runs, last_job_count, last_fetch_at, last_non_empty_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(source) DO UPDATE SET
+			consecutive_zero_runs = excluded.consecutive_zero_runs,
+			last_job_count        = excluded.last_job_count,
+			last_fetch_at         = excluded.last_fetch_at,
+			last_non_empty_at     = excluded.last_non_empty_at
+	`, source, next, jobCount, formatTime(at), nonEmptyAt); err != nil {
+		return SourceHealth{}, fmt.Errorf("recording fetch for %q: %w", source, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return SourceHealth{}, fmt.Errorf("recording fetch for %q: %w", source, err)
+	}
+
+	h := SourceHealth{
+		Source:              source,
+		ConsecutiveZeroRuns: next,
+		PreviousZeroRuns:    prev,
+		LastJobCount:        jobCount,
+		LastFetchAt:         at,
+	}
+	if nonEmptyAt.Valid {
+		h.LastNonEmptyAt, _ = time.Parse(time.RFC3339, nonEmptyAt.String)
+	}
+	return h, nil
+}
+
+// SourceHealth returns the recorded health for one source, or ok=false if it
+// has never been fetched successfully.
+func (s *SQLiteStore) SourceHealth(ctx context.Context, source string) (SourceHealth, bool, error) {
+	var (
+		h           SourceHealth
+		lastFetchAt string
+		nonEmptyAt  sql.NullString
+	)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT source, consecutive_zero_runs, last_job_count, last_fetch_at, last_non_empty_at
+		FROM source_health WHERE source = ?`, source).
+		Scan(&h.Source, &h.ConsecutiveZeroRuns, &h.LastJobCount, &lastFetchAt, &nonEmptyAt)
+	if err == sql.ErrNoRows {
+		return SourceHealth{}, false, nil
+	}
+	if err != nil {
+		return SourceHealth{}, false, fmt.Errorf("reading health for %q: %w", source, err)
+	}
+	h.LastFetchAt, _ = time.Parse(time.RFC3339, lastFetchAt)
+	if nonEmptyAt.Valid {
+		h.LastNonEmptyAt, _ = time.Parse(time.RFC3339, nonEmptyAt.String)
+	}
+	return h, true, nil
 }
 
 // Close releases the underlying database handle.
