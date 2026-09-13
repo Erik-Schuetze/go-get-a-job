@@ -14,6 +14,7 @@ import (
 	"github.com/Erik-Schuetze/go-get-a-job/internal/config"
 	"github.com/Erik-Schuetze/go-get-a-job/internal/filter"
 	"github.com/Erik-Schuetze/go-get-a-job/internal/model"
+	"github.com/Erik-Schuetze/go-get-a-job/internal/notify"
 	"github.com/Erik-Schuetze/go-get-a-job/internal/sources"
 	"github.com/Erik-Schuetze/go-get-a-job/internal/store"
 )
@@ -145,6 +146,7 @@ func (f *fakeStore) SourceHealth(_ context.Context, source string) (store.Source
 type fakeNotifier struct {
 	mu       sync.Mutex
 	notified []model.Job
+	matches  []notify.Match
 	errIDs   map[string]error
 	failed   int
 	warnings []fakeWarning
@@ -160,13 +162,14 @@ func newFakeNotifier() *fakeNotifier {
 	return &fakeNotifier{errIDs: map[string]error{}}
 }
 
-func (f *fakeNotifier) Notify(_ context.Context, job model.Job, _ string) error {
+func (f *fakeNotifier) Notify(_ context.Context, match notify.Match) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err, ok := f.errIDs[job.ID]; ok {
+	if err, ok := f.errIDs[match.Job.ID]; ok {
 		return err
 	}
-	f.notified = append(f.notified, job)
+	f.notified = append(f.notified, match.Job)
+	f.matches = append(f.matches, match)
 	return nil
 }
 
@@ -755,5 +758,61 @@ func TestRunner_Run_CapsReportedLocationRejections(t *testing.T) {
 	if len(summary.LocationRejections) != maxReportedLocationRejections {
 		t.Errorf("expected the sample to be capped at %d, got %d",
 			maxReportedLocationRejections, len(summary.LocationRejections))
+	}
+}
+
+// TestRunner_Run_HonoursTheLocationVeto covers the one outcome that is neither
+// a match nor a miss: the scorer says the posting is a fit but the location
+// rules it out.
+//
+// Two things have to happen together, and each is wrong on its own. The
+// posting must be persisted, because a job that is not saved is scored again
+// on every subsequent run and billed again each time - forever, since the veto
+// repeats. And it must be counted, because a posting that is dropped with no
+// trace in the run summary is indistinguishable from one the watcher never
+// saw, which is the failure this program exists to prevent.
+func TestRunner_Run_HonoursTheLocationVeto(t *testing.T) {
+	vetoed := model.Job{ID: "job-us-only", Title: "Platform Engineer", Company: "Acme"}
+	kept := model.Job{ID: "job-remote-eu", Title: "DevOps Engineer", Company: "Acme"}
+
+	no := false
+	yes := true
+	scorer := newFakeScorer()
+	// A high score on the vetoed posting is deliberate: it proves the veto is
+	// not riding on the threshold, since scoring alone would have notified it.
+	scorer.scores["job-us-only"] = filter.AIScore{Score: 0.95, Reason: "Great stack, US only.", LocationOK: &no}
+	scorer.scores["job-remote-eu"] = filter.AIScore{Score: 0.95, Reason: "Great stack.", LocationOK: &yes}
+
+	st := newFakeStore()
+	notifier := newFakeNotifier()
+
+	r := &Runner{
+		Sources:  []sources.Source{&fakeSource{name: "fake", jobs: []model.Job{vetoed, kept}}},
+		Filter:   baseFilterConfig(),
+		Profile:  "platform engineer in Germany",
+		Scorer:   scorer,
+		Store:    st,
+		Notifier: notifier,
+		Now:      func() time.Time { return time.Unix(1000, 0) },
+	}
+
+	summary := r.Run(context.Background())
+
+	if summary.VetoedByLocation != 1 {
+		t.Errorf("expected VetoedByLocation=1, got %d", summary.VetoedByLocation)
+	}
+	if summary.Matched != 1 {
+		t.Errorf("expected Matched=1, got %d", summary.Matched)
+	}
+	if len(notifier.notified) != 1 || notifier.notified[0].ID != "job-remote-eu" {
+		t.Errorf("expected only job-remote-eu to be notified, got %+v", notifier.notified)
+	}
+	if _, ok := st.records["job-us-only"]; !ok {
+		t.Error("expected the vetoed job to be saved, so it is never scored and billed again")
+	}
+	// Saved, but never marked notified: the row has to stay distinguishable
+	// from one that was actually announced.
+	if rec := st.records["job-us-only"]; rec.NotifiedAt != nil {
+		t.Errorf("vetoed job was marked notified at %v", *rec.NotifiedAt)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/Erik-Schuetze/go-get-a-job/internal/httpbody"
 	"github.com/Erik-Schuetze/go-get-a-job/internal/model"
@@ -58,9 +59,18 @@ type greenhouseJob struct {
 	Content        string             `json:"content"`
 	Location       greenhouseLocation `json:"location"`
 	FirstPublished string             `json:"first_published"`
+	Departments    []greenhouseDept   `json:"departments"`
 }
 
 type greenhouseLocation struct {
+	Name string `json:"name"`
+}
+
+// greenhouseDept is one entry of a posting's departments array. Greenhouse
+// nests a child array inside each department for sub-departments, but the
+// parent name is the one that says what the team is ("R&D: Platform"), so the
+// children are not decoded.
+type greenhouseDept struct {
 	Name string `json:"name"`
 }
 
@@ -102,7 +112,22 @@ func (g *Greenhouse) Fetch(ctx context.Context) ([]model.Job, error) {
 			URL:         j.AbsoluteURL,
 			Description: stripHTML(j.Content),
 			PostedAt:    parseRFC3339Best(j.FirstPublished),
+			Department:  greenhouseDepartment(j.Departments),
 		})
 	}
 	return jobs, nil
+}
+
+// greenhouseDepartment joins the posting's department names into one label.
+// A posting can belong to several, and dropping all but the first loses real
+// information; the same join-and-sanitize path every other display-only field
+// goes through keeps the length bounded.
+func greenhouseDepartment(depts []greenhouseDept) string {
+	names := make([]string, 0, len(depts))
+	for _, d := range depts {
+		if name := strings.TrimSpace(d.Name); name != "" {
+			names = append(names, name)
+		}
+	}
+	return strings.Join(names, ", ")
 }

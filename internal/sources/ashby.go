@@ -54,6 +54,16 @@ type ashbyJob struct {
 	IsListed         bool   `json:"isListed"`
 	PublishedAt      string `json:"publishedAt"`
 	DescriptionPlain string `json:"descriptionPlain"`
+
+	// Display-only metadata. Ashby publishes these on the job-board
+	// response, so they cost nothing to carry; EmploymentType is already
+	// human-readable ("FullTime", "Contract") and left as-is rather than
+	// mapped, so a new value Ashby adds arrives as itself instead of
+	// disappearing behind an incomplete lookup table.
+	Department     string `json:"department"`
+	Team           string `json:"team"`
+	WorkplaceType  string `json:"workplaceType"`
+	EmploymentType string `json:"employmentType"`
 }
 
 // Fetch retrieves every open, listed posting on this company's Ashby
@@ -98,6 +108,12 @@ func (a *Ashby) Fetch(ctx context.Context) ([]model.Job, error) {
 			URL:         j.JobURL,
 			Description: j.DescriptionPlain,
 			PostedAt:    parseRFC3339Best(j.PublishedAt),
+			// Department and team are joined rather than one being
+			// preferred: Ashby often fills only team, or fills both with
+			// the same value, and the render side collapses duplicates.
+			Department:     joinNonEmpty(" · ", j.Department, j.Team),
+			WorkplaceType:  j.WorkplaceType,
+			EmploymentType: j.EmploymentType,
 		})
 	}
 	return jobs, nil

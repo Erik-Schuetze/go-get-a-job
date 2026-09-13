@@ -67,10 +67,22 @@ type smartRecruitersListItem struct {
 	Name         string                  `json:"name"`
 	ReleasedDate string                  `json:"releasedDate"`
 	Location     smartRecruitersLocation `json:"location"`
+
+	// Department and TypeOfEmployment are objects carrying a human-readable
+	// label beside their id, and the label is what belongs on a
+	// notification. Both are display only.
+	Department       smartRecruitersLabel `json:"department"`
+	TypeOfEmployment smartRecruitersLabel `json:"typeOfEmployment"`
 }
 
 type smartRecruitersLocation struct {
 	FullLocation string `json:"fullLocation"`
+}
+
+// smartRecruitersLabel is the {id,label} shape SmartRecruiters uses for every
+// classification field.
+type smartRecruitersLabel struct {
+	Label string `json:"label"`
 }
 
 type smartRecruitersDetail struct {
@@ -208,5 +220,8 @@ func (s *SmartRecruiters) fetchDetail(ctx context.Context, item smartRecruitersL
 		URL:         detail.PostingURL,
 		Description: strings.Join(descParts, "\n\n"),
 		PostedAt:    parseRFC3339Best(item.ReleasedDate),
+
+		Department:     item.Department.Label,
+		EmploymentType: item.TypeOfEmployment.Label,
 	}, nil
 }

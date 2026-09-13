@@ -69,6 +69,42 @@ type teamtailorPosting struct {
 	DatePosted  string              `json:"datePosted"`
 	Description string              `json:"description"`
 	JobLocation teamtailorLocations `json:"jobLocation"`
+
+	// EmploymentType and JobLocationType are schema.org JobPosting fields
+	// that Teamtailor populates. Both are display only.
+	EmploymentType  teamtailorStrings `json:"employmentType"`
+	JobLocationType string            `json:"jobLocationType"`
+}
+
+// teamtailorStrings decodes a schema.org property that is legitimately either
+// one string or an array of them. Same reasoning as teamtailorLocations: the
+// single-value form is common enough that decoding only the array form would
+// silently blank the field on half the boards.
+type teamtailorStrings []string
+
+func (s *teamtailorStrings) UnmarshalJSON(data []byte) error {
+	var many []string
+	if err := json.Unmarshal(data, &many); err == nil {
+		*s = many
+		return nil
+	}
+
+	var one string
+	if err := json.Unmarshal(data, &one); err != nil {
+		return err
+	}
+	*s = teamtailorStrings{one}
+	return nil
+}
+
+// teamtailorWorkplaceType maps schema.org's jobLocationType to the wording the
+// other connectors use. TELECOMMUTE is the only value the vocabulary defines
+// for fully remote work; anything else is left blank rather than guessed at.
+func teamtailorWorkplaceType(jobLocationType string) string {
+	if strings.EqualFold(strings.TrimSpace(jobLocationType), "TELECOMMUTE") {
+		return "Remote"
+	}
+	return ""
 }
 
 // teamtailorLocations exists because schema.org's jobLocation is legitimately
@@ -147,6 +183,9 @@ func (t *Teamtailor) Fetch(ctx context.Context) ([]model.Job, error) {
 			URL:         item.URL,
 			Description: description,
 			PostedAt:    teamtailorTime(item.JobPosting.DatePosted, item.DatePublished),
+
+			WorkplaceType:  teamtailorWorkplaceType(item.JobPosting.JobLocationType),
+			EmploymentType: strings.Join(item.JobPosting.EmploymentType, ", "),
 		})
 	}
 	return jobs, nil

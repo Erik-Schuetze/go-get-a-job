@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/Erik-Schuetze/go-get-a-job/internal/config"
 	"github.com/Erik-Schuetze/go-get-a-job/internal/httpbody"
 	"github.com/Erik-Schuetze/go-get-a-job/internal/model"
 	"github.com/Erik-Schuetze/go-get-a-job/internal/sanitize"
@@ -22,6 +25,40 @@ const (
 	maxTitleChars  = 120
 	maxReasonChars = 500
 	maxBodyChars   = 1000
+
+	// maxLocationSuffixChars bounds the hint appended to the title. It is
+	// small on purpose: the suffix exists to tell two otherwise identical
+	// notifications apart, so it only has to be long enough to distinguish
+	// them, and every rune it takes is a rune unavailable to the job title.
+	maxLocationSuffixChars = 28
+
+	// maxTagChars bounds the company tag, and maxMetaFieldChars the
+	// individual metadata labels.
+	maxTagChars       = 30
+	maxMetaFieldChars = 56
+	maxSignalsChars   = 120
+
+	// fallbackTag is used when a display name slugifies to nothing at all.
+	fallbackTag = "job"
+
+	// locationSeparator rejoins the parts of a title. " · " reads as a
+	// separator in every client in a way a bare hyphen does not.
+	locationSeparator = " · "
+
+	// titleSeparator sits between the tier emoji and the company name.
+	titleSeparator = " "
+
+	// maxEmojiRunes bounds the tier emoji. It mirrors the bound config
+	// validation enforces, and exists here so the title budget can be
+	// reserved against a known worst case rather than whatever a caller
+	// happens to supply.
+	maxEmojiRunes = 8
+
+	// truncationMarkerChars is how many runes sanitize.TruncateRunes appends
+	// when it cuts. It is reserved as part of the title budget so the
+	// marker cannot push the location suffix back out of the title it was
+	// just protected from.
+	truncationMarkerChars = 3
 )
 
 // Ntfy delivers notifications via an ntfy (https://ntfy.sh, or
@@ -35,45 +72,69 @@ type Ntfy struct {
 	// server/topic is configured to deny anonymous publishing.
 	Token string
 
+	// MatchTiers maps a score onto the emoji and priority a notification is
+	// delivered with. Empty means the built-in defaults; see
+	// config.DefaultMatchTiers.
+	MatchTiers []config.MatchTier
+
 	HTTPClient *http.Client
 	// MaxErrorBytes caps how much of an error response body is included in
 	// the returned error; see internal/httpbody.
 	MaxErrorBytes int64
+
+	// Now defaults to time.Now if nil; overridable so the "Posted N days
+	// ago" line can be asserted without depending on the wall clock.
+	Now func() time.Time
 }
 
 // NewNtfy builds an Ntfy notifier for the given server URL, topic, and
-// optional auth token (pass "" if the topic doesn't require auth).
-func NewNtfy(url, topic, token string) *Ntfy {
+// optional auth token (pass "" if the topic doesn't require auth). An empty
+// tiers list selects the built-in defaults.
+func NewNtfy(url, topic, token string, tiers []config.MatchTier) *Ntfy {
+	if len(tiers) == 0 {
+		tiers = config.DefaultMatchTiers()
+	}
 	return &Ntfy{
 		URL:           strings.TrimRight(url, "/"),
 		Topic:         topic,
 		Token:         token,
+		MatchTiers:    tiers,
 		HTTPClient:    &http.Client{Timeout: 15 * time.Second},
 		MaxErrorBytes: httpbody.MaxErrorBytes,
 	}
 }
 
-// Notify publishes a single job match. reason is the AI scorer's
-// human-readable explanation; if empty, a generic message is used
-// instead.
-func (n *Ntfy) Notify(ctx context.Context, job model.Job, reason string) error {
-	title := sanitize.SingleLine(job.Title, maxTitleChars)
-	company := sanitize.SingleLine(job.Company, maxTitleChars)
-	location := sanitize.SingleLine(job.Location, maxTitleChars)
+// Notify publishes a single job match.
+//
+// The message is laid out so the whole of it is readable from the notification
+// shade without opening the app:
+//
+//	<emoji> <Company>: <Title> · <location>
+//	<department> · <workplace> · <employment> · Posted <age>
+//	Matched: <signals>
+//
+//	<scorer's reason>
+//
+// The emoji is the first character of the title and encodes the score, which
+// was previously only implicit in the prose. The location is in the title
+// because the title is what a collapsed notification shows, and without it two
+// postings for the same role at the same company are indistinguishable.
+func (n *Ntfy) Notify(ctx context.Context, match Match) error {
+	job := match.Job
+	tier := n.tierFor(match.Score)
 
-	body := sanitize.MultiLine(reason, maxReasonChars)
-	if body == "" {
-		body = fmt.Sprintf("New match: %s at %s", title, company)
-	}
-	if location != "" {
-		body = fmt.Sprintf("%s\nLocation: %s", body, location)
-	}
-	body = sanitize.MultiLine(body, maxBodyChars)
+	title := n.title(job, tier.Emoji)
 
 	headers := map[string]string{
-		"Title":    sanitize.SingleLine(fmt.Sprintf("%s: %s", company, title), maxTitleChars),
-		"Priority": "default",
-		"Tags":     "briefcase",
+		"Title":    title,
+		"Priority": strconv.Itoa(tier.Priority),
+		// Replaces the fixed "briefcase" tag that used to live here. ntfy
+		// converts a tag matching an emoji short code into an emoji
+		// prepended to the title, so keeping it would render the 💼 next to
+		// the tier emoji - two emoji on every notification. A company slug
+		// matches no short code and is instead listed beneath the message,
+		// where it doubles as the thing that makes the feed skimmable.
+		"Tags": companyTag(job.Company),
 	}
 	// Click becomes a tap target in the ntfy app. Only absolute http(s)
 	// links are meaningful there; a javascript: or data: URL from a
@@ -82,7 +143,191 @@ func (n *Ntfy) Notify(ctx context.Context, job model.Job, reason string) error {
 		headers["Click"] = link
 	}
 
-	return n.publish(ctx, body, headers)
+	return n.publish(ctx, n.buildBody(job, match), headers)
+}
+
+// title renders "<emoji> <Company>: <Title> · <Location>", reserving room for
+// the emoji and the location suffix before truncating rather than after.
+//
+// Truncating the assembled string instead would let a long posting title eat
+// the suffix from the end - deleting exactly the field the suffix exists to
+// provide, and doing it silently and only for long titles, which is the worst
+// way for it to fail. The emoji has to be reserved for the same reason, and
+// less obviously: a two-rune prefix is enough to push the suffix off the end
+// of a title already sitting at the limit.
+func (n *Ntfy) title(job model.Job, emoji string) string {
+	prefix := sanitize.SingleLine(emoji, maxEmojiRunes)
+
+	company := sanitize.SingleLine(job.Company, maxTitleChars)
+	title := sanitize.SingleLine(job.Title, maxTitleChars)
+
+	suffix := locationHint(job.Location)
+
+	// Everything that is not the company/title portion, including the
+	// truncation marker the name may have appended.
+	reserved := utf8.RuneCountInString(prefix) + utf8.RuneCountInString(titleSeparator) + truncationMarkerChars
+	if suffix != "" {
+		reserved += utf8.RuneCountInString(locationSeparator) + utf8.RuneCountInString(suffix)
+	}
+
+	budget := maxTitleChars - reserved
+	if budget < 1 {
+		// A pathological location or emoji; drop the suffix rather than the
+		// company and job title, which is what the notification is for.
+		suffix = ""
+		budget = maxTitleChars - utf8.RuneCountInString(prefix) - utf8.RuneCountInString(titleSeparator) - truncationMarkerChars
+	}
+
+	name := sanitize.SingleLine(fmt.Sprintf("%s: %s", company, title), budget)
+	if prefix != "" {
+		name = prefix + titleSeparator + name
+	}
+	if suffix == "" {
+		return name
+	}
+	return name + locationSeparator + suffix
+}
+
+// buildBody assembles the notification body: metadata first, prose last.
+//
+// The order matters for the collapsed notification, which shows only the first
+// line or two. Metadata goes first because it is short, structured, and
+// complete on its own; the scorer's reason goes last because it is a few
+// hundred characters of prose whose meaning usually lands at the end of the
+// second sentence. Reversed, the metadata would be pushed out of the visible
+// area by text that does not need to be there.
+func (n *Ntfy) buildBody(job model.Job, match Match) string {
+	var lines []string
+
+	if meta := metadataLine(job, n.now()); meta != "" {
+		lines = append(lines, meta)
+	}
+	if signals := sanitize.SingleLine(strings.Join(match.Signals, ", "), maxSignalsChars); signals != "" {
+		lines = append(lines, "Matched: "+signals)
+	}
+
+	reason := sanitize.MultiLine(match.Reason, maxReasonChars)
+	if reason == "" {
+		reason = fmt.Sprintf("New match: %s at %s", sanitize.SingleLine(job.Title, maxTitleChars), sanitize.SingleLine(job.Company, maxTitleChars))
+	}
+	if len(lines) == 0 {
+		return sanitize.MultiLine(reason, maxBodyChars)
+	}
+	// A blank line separates the structured head from the prose, so the
+	// reason does not read as one more field.
+	return sanitize.MultiLine(strings.Join(lines, "\n")+"\n\n"+reason, maxBodyChars)
+}
+
+// metadataLine renders the posting's own labels as one line, omitting each
+// field its source did not provide.
+//
+// Omission rather than a placeholder is deliberate: these fields come from
+// different ATS APIs that publish different subsets, so a row of "N/A · N/A"
+// on a Greenhouse posting would be noise presenting itself as information.
+func metadataLine(job model.Job, now time.Time) string {
+	parts := make([]string, 0, 4)
+	for _, v := range []string{job.Department, job.WorkplaceType, job.EmploymentType} {
+		if s := sanitize.SingleLine(v, maxMetaFieldChars); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	if age := postingAge(job.PostedAt, now); age != "" {
+		parts = append(parts, "Posted "+age)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// postingAge renders how long ago a posting went up, at a granularity that
+// answers "is this still worth applying to" rather than "exactly when".
+// Returns "" when the source published no timestamp.
+func postingAge(postedAt, now time.Time) string {
+	if postedAt.IsZero() {
+		return ""
+	}
+	// Workday exposes only a relative string, and clocks skew, so a future
+	// timestamp is a normal artefact rather than an error. "In 3 hours"
+	// would be nonsense on a job posting; "today" is closer to the truth.
+	if !postedAt.Before(now) {
+		return "today"
+	}
+	switch d := now.Sub(postedAt); {
+	case d < 24*time.Hour:
+		if hours := int(d.Hours()); hours >= 1 {
+			if hours == 1 {
+				return "1 hour ago"
+			}
+			return fmt.Sprintf("%d hours ago", hours)
+		}
+		return "today"
+	case d < 48*time.Hour:
+		return "yesterday"
+	default:
+		return fmt.Sprintf("%d days ago", int(d.Hours()/24))
+	}
+}
+
+// locationHint reduces a location to the shortest fragment that still
+// distinguishes it from a neighbouring one.
+//
+// Several boards list a posting against every place it may be filled in
+// ("Remote, Germany; Remote, United Kingdom"), and the full value overruns the
+// title. The first segment is the one the board leads with, so it is both the
+// most representative and the shortest.
+func locationHint(location string) string {
+	loc := sanitize.SingleLine(location, maxTitleChars)
+	if loc == "" {
+		return ""
+	}
+	if first, _, found := strings.Cut(loc, ";"); found {
+		loc = strings.TrimSpace(first)
+	}
+	if utf8.RuneCountInString(loc) <= maxLocationSuffixChars {
+		return loc
+	}
+	return strings.TrimSpace(sanitize.TruncateRunes(loc, maxLocationSuffixChars-1)) + "…"
+}
+
+// companyTag builds the ntfy tag shown under a notification from a display
+// name.
+//
+// Slugifying is required rather than cosmetic: a display name containing a
+// comma would split the Tags header into two tags, so "Solo.io, Inc" would
+// silently arrive as two labels instead of one.
+func companyTag(company string) string {
+	var b strings.Builder
+	lastUnderscore := true // a leading separator must not produce a leading _
+	for _, r := range strings.ToLower(company) {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			lastUnderscore = false
+		case !lastUnderscore:
+			b.WriteRune('_')
+			lastUnderscore = true
+		}
+	}
+	tag := strings.Trim(b.String(), "_")
+	if tag == "" {
+		return fallbackTag
+	}
+	return sanitize.TruncateRunes(tag, maxTagChars)
+}
+
+// tierFor maps a score onto its tier, falling back to the last configured tier
+// so a malformed list cannot produce an emoji-less notification.
+//
+// The mapping itself lives in config.MatchTierFor because the validation rules
+// ("ordered high to low", "a catch-all must exist") and the lookup rule are the
+// same decision seen twice; two copies would drift.
+func (n *Ntfy) tierFor(score float64) config.MatchTier {
+	return config.NtfyConfig{MatchTiers: n.MatchTiers}.MatchTierFor(score)
+}
+
+func (n *Ntfy) now() time.Time {
+	if n.Now != nil {
+		return n.Now()
+	}
+	return time.Now()
 }
 
 // NotifyFailure publishes a high-priority alert that a run failed.

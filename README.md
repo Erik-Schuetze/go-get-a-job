@@ -37,11 +37,13 @@ description of what you're looking for — not just keyword matching.
    budget on them.
 3. **AI scorer** (`internal/filter`) sends surviving postings, plus your
    free-text profile, to an OpenAI-compatible chat completions API and
-   gets back a 0-1 relevance score and a short human-readable reason.
+   gets back a 0-1 relevance score, a short human-readable reason, and a
+   separate `locationOk` verdict (see "How a match is presented").
 4. **Store** (`internal/store`, SQLite) remembers every job it has ever
    processed, so nothing is re-scored or re-notified on later runs.
 5. **Notify** (`internal/notify`, ntfy) pushes a notification for anything
-   scoring above your threshold.
+   scoring above your threshold, presented according to `notify.ntfy.matchTiers`
+   (see "How a match is presented").
 
 Each source's fetch also feeds a per-source health record, so a board that
 returns nothing for long enough produces one `ntfy` warning rather than silence
@@ -512,8 +514,9 @@ want. So the pre-filter only ever rules on places it can read, and the
 relocation rules in `ai.instructions` below do the rest.
 
 The cost is that a posting located `"Remote - Canada"` reaches the scorer, which
-is one AI call spent where a hardcoded denial would have been free. With
-`minAIScore` at its default that posting is scored low and not notified.
+is one AI call spent where a hardcoded denial would have been free. The scorer
+reports that as a `locationOk: false` veto rather than as a low score, so the
+posting is saved but not announced - see "How a match is presented".
 
 Dropped-location diagnostics appear at the end of each run and, per posting,
 under `--log-level debug`, so you can see *why* something was filtered rather
@@ -531,7 +534,10 @@ ai:
     Treat "Remote - <country>" exactly like an onsite role in that country.
     A role that is remote globally, or workable from Germany, is fine. If a
     posting requires being legally based outside Germany or requires
-    relocation, score it 0.2 or below.
+    relocation, set locationOk to false.
+
+    A senior-sounding title at a company whose product is not itself
+    infrastructure is a mild negative, not a match.
 ```
 
 Two things to know:
@@ -543,6 +549,82 @@ Two things to know:
   output contract cannot be overridden from here.
 - **It costs tokens on every call.** It is capped (4000 characters) and the
   config fails to load if you exceed it.
+
+Note the wording above: rules about *where* a role is belong in `locationOk`,
+not in the score. Scoring and location are answered separately and the score is
+deliberately kept free of location, because a rule phrased as "score it 0.2 or
+below" mixes the two and there is then no way to tell "this is the wrong job"
+from "this is the right job in the wrong place" when reading a notification.
+
+#### `notify.ntfy.matchTiers` - how a match is presented
+
+A notification reads:
+
+```
+⭐ Grafana Labs: Platform Engineer · Germany
+R&D: Platform · Remote · Full-time · Posted 6 days ago
+Matched: Crossplane, Terraform, platform team
+
+Strong fit: the posting is built around Crossplane compositions and the team
+owns the internal platform. Terraform is mentioned as the thing they are
+migrating away from, which matches the profile's direction.
+```
+
+Three properties are deliberate:
+
+- **The emoji is the score.** `matchTiers` maps score bands to an emoji and an
+  ntfy priority, so the notification list is skimmable without opening anything.
+- **The location is in the title.** A collapsed notification shows the title and
+  little else, and without it two postings for the same role at the same company
+  are indistinguishable.
+- **There is exactly one emoji.** A *tag* matching an emoji short code is turned
+  by ntfy into an emoji prepended to the title - which is why the company goes in
+  the tag as a slug (`grafana_labs`) and not as an icon. The slug matches no
+  short code, so it appears as a filterable label under the message instead.
+
+```yaml
+notify:
+  type: ntfy
+  ntfy:
+    url: http://ntfy.go-get-a-job.svc.cluster.local
+    topic: job-matches
+    matchTiers:
+      - minScore: 0.95
+        emoji: "💎"
+        priority: 5
+      - minScore: 0.85
+        emoji: "⭐"
+        priority: 4
+      - emoji: "💼"
+        priority: 3
+```
+
+- **`minScore`** is the lowest score the tier covers. Tiers are matched
+  top-down, so list them highest-first, and the **last entry must omit
+  `minScore`** to act as the catch-all - without one, a notified posting could
+  end up with no emoji at all. The config fails to load rather than allow it.
+- **`emoji`** is required. It may be any emoji, including a custom one.
+- **`priority`** is ntfy's own 1-5 scale (1 min, 5 urgent). Clients expose one
+  notification channel per priority, which is what lets you mute the low tiers
+  while the top one still rings.
+- **A tier whose `minScore` is below `filter.minAIScore` can never be reached**,
+  because nothing below the threshold is notified at all. That is not an error -
+  you may be about to lower the threshold - but the app logs a warning at
+  startup, since the only other symptom is an emoji that never arrives.
+- Omit `matchTiers` entirely and the defaults above apply, so an existing config
+  keeps working unchanged.
+
+The default boundaries are not round numbers chosen for looks: they were picked
+from the scores a real 47-company config actually produced, where 0.85 and 0.95
+fall in gaps between clusters. If your own list produces a different shape, that
+is exactly why this is config rather than code.
+
+A posting the scorer vetoes with `locationOk: false` is **saved but not
+announced**. Saving it matters: the veto repeats on every run, and a row that is
+never written would be re-scored and re-billed forever. The run summary reports
+the count as `vetoed_by_location`, next to `filtered_by_location` - neither is
+silent, because a posting dropped with no trace is indistinguishable from one
+the watcher never saw.
 
 #### `guard` - noticing a board that has gone quiet
 

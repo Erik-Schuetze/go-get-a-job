@@ -48,10 +48,21 @@ type leverPosting struct {
 	DescriptionPlain string          `json:"descriptionPlain"`
 	CreatedAt        int64           `json:"createdAt"`
 	Categories       leverCategories `json:"categories"`
+
+	// WorkplaceType is the posting-level answer to "where does this happen"
+	// ("remote", "hybrid", "on-site"); it was already on the wire and
+	// unused. Display only.
+	WorkplaceType string `json:"workplaceType"`
 }
 
+// leverCategories carries the classification Lever groups a posting under.
+// EmploymentType is taken from Commitment, which is Lever's own name for the
+// engagement ("Full-time", "Contract"); both are display-only.
 type leverCategories struct {
-	Location string `json:"location"`
+	Location   string `json:"location"`
+	Team       string `json:"team"`
+	Department string `json:"department"`
+	Commitment string `json:"commitment"`
 }
 
 // Fetch retrieves every open posting on this company's Lever board.
@@ -92,6 +103,10 @@ func (l *Lever) Fetch(ctx context.Context) ([]model.Job, error) {
 			URL:         p.HostedURL,
 			Description: p.DescriptionPlain,
 			PostedAt:    msToTime(p.CreatedAt),
+
+			Department:     joinNonEmpty(" · ", p.Categories.Department, p.Categories.Team),
+			WorkplaceType:  p.WorkplaceType,
+			EmploymentType: p.Categories.Commitment,
 		})
 	}
 	return jobs, nil

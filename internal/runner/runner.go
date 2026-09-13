@@ -61,6 +61,12 @@ type Summary struct {
 	// the log into a wall of text.
 	LocationRejections []LocationRejection
 
+	// VetoedByLocation counts postings the AI scorer explicitly ruled out on
+	// location. They are saved but not notified. Reported for the same
+	// reason FilteredByLocation is: without a count, a run that vetoed
+	// everything looks exactly like a run that found nothing.
+	VetoedByLocation int
+
 	// SilentSources lists sources that crossed the dead-source threshold on
 	// this run (or are due a repeat reminder). A run with matches *and*
 	// entries here is normal and expected: one board going quiet says
@@ -137,6 +143,9 @@ func (r *Runner) Run(ctx context.Context) Summary {
 			if res.matched {
 				summary.Matched++
 			}
+			if res.locationVetoed {
+				summary.VetoedByLocation++
+			}
 			if res.locationRejected {
 				recordLocationRejection(logger, &summary, job, res.location)
 			}
@@ -153,6 +162,7 @@ func (r *Runner) Run(ctx context.Context) Summary {
 		"new", summary.New,
 		"matched", summary.Matched,
 		"filtered_by_location", summary.FilteredByLocation,
+		"vetoed_by_location", summary.VetoedByLocation,
 		"source_errors", len(summary.SourceErrors),
 		"process_errors", len(summary.ProcessErrors),
 		"silent_sources", len(summary.SilentSources),
@@ -204,6 +214,10 @@ type processResult struct {
 	isNew bool
 	// matched reports whether the job resulted in a delivered notification.
 	matched bool
+	// locationVetoed reports whether the AI scorer explicitly ruled the job
+	// out on location. The job is still saved (so it is never re-scored and
+	// re-billed) but deliberately not notified.
+	locationVetoed bool
 	// locationRejected reports whether the location pre-filter - not the
 	// keyword pre-filter - dropped the job.
 	locationRejected bool
@@ -259,11 +273,25 @@ func (r *Runner) processJob(ctx context.Context, job model.Job, now time.Time) (
 		return processResult{}, fmt.Errorf("saving scored job: %w", err)
 	}
 
+	if score.VetoesLocation() {
+		// Saved above, so this posting is never scored again; simply not
+		// announced. Counted, not discarded silently - an unannounced drop
+		// with no trace in the run summary is indistinguishable from the
+		// watcher having missed the posting, which is the one failure this
+		// program exists to prevent.
+		return processResult{isNew: true, locationVetoed: true}, nil
+	}
+
 	if score.Score < r.Filter.MinAIScore {
 		return processResult{isNew: true}, nil
 	}
 
-	if err := r.Notifier.Notify(ctx, job, score.Reason); err != nil {
+	if err := r.Notifier.Notify(ctx, notify.Match{
+		Job:     job,
+		Score:   score.Score,
+		Reason:  score.Reason,
+		Signals: score.Signals,
+	}); err != nil {
 		return processResult{}, fmt.Errorf("sending notification: %w", err)
 	}
 	if err := r.Store.MarkNotified(ctx, job.ID, now); err != nil {

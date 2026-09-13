@@ -25,6 +25,25 @@ type Job struct {
 	URL         string
 	Description string
 
+	// The three fields below are short, human-readable labels several ATS
+	// APIs already return alongside a posting and that the connectors
+	// previously discarded. They exist because they cost nothing to carry
+	// (no extra request, no extra AI token) and they are the difference
+	// between two notifications for the same job title at the same company
+	// being distinguishable at a glance on a phone.
+	//
+	// All three are free-form text from a third party, so they are for
+	// display only: nothing in the filter or scoring path may read them,
+	// and anything rendering them must sanitize first.
+
+	// Department is the employer's own grouping, e.g. "R&D: Platform".
+	Department string
+	// WorkplaceType describes where the work happens, e.g. "Remote",
+	// "Hybrid", "Onsite". Distinct from Location, which names *where*.
+	WorkplaceType string
+	// EmploymentType is the engagement, e.g. "Full-time", "Contract".
+	EmploymentType string
+
 	// PostedAt is best-effort; some sources (e.g. Workday's list endpoint)
 	// only expose a relative string rather than a precise timestamp, in
 	// which case this is left as the zero value. Callers should rely on
