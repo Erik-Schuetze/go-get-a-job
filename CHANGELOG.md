@@ -1,4 +1,8 @@
-## [Unreleased]
+## [0.4.0] - 2026-09-13
+
+Two themes: **reach more employers** (four new connectors) and **notice when one
+goes dark** (`-validate` plus the dead-source guard). Also in here, from PR #8:
+every outbound request now identifies the tool and is paced.
 
 ### Added
 
@@ -230,6 +234,7 @@ Both are fixed.
   were accepted and notified about under the old rules are not re-scored or
   withdrawn.
 
-[Unreleased]: https://github.com/Erik-Schuetze/go-get-a-job/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Erik-Schuetze/go-get-a-job/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Erik-Schuetze/go-get-a-job/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Erik-Schuetze/go-get-a-job/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Erik-Schuetze/go-get-a-job/releases/tag/v0.2.0
