@@ -457,3 +457,107 @@ func TestNotify_OmitsMetadataTheSourceDidNotProvide(t *testing.T) {
 		t.Errorf("body =\n%q\nwant\n%q", captured.body, want)
 	}
 }
+
+// TestLocationHint_PrefersTheSegmentTheOperatorCanActuallyUse covers a false
+// negative the first-segment rule manufactures.
+//
+// Canonical lists one role against two regions and leads with the one that
+// rules the posting out for this operator ("Home Based - Americas"), while the
+// second ("Home based - EMEA") is what makes it a match. Showing the first
+// segment renders a workable role as an inapplicable one, in the single place
+// the operator cannot correct it from context - which is strictly worse than
+// showing the full string, because it looks like information.
+func TestLocationHint_PrefersTheSegmentTheOperatorCanActuallyUse(t *testing.T) {
+	tests := []struct {
+		name        string
+		location    string
+		matchedRule string
+		want        string
+	}{
+		{
+			name:        "picks the matched region over the board's first",
+			location:    "Home Based - Americas; Home based - EMEA",
+			matchedRule: "EMEA",
+			want:        "Home based - EMEA",
+		},
+		{
+			name:        "picks the matched city over a leading foreign region",
+			location:    "Remote, United States; Remote, Germany",
+			matchedRule: "Germany",
+			want:        "Remote, Germany",
+		},
+		{
+			name:        "a multi-word entry still matches its own segment",
+			location:    "London, United Kingdom; Remote, European Union",
+			matchedRule: "European Union",
+			want:        "Remote, European Union",
+		},
+		{
+			name:        "matching is case-insensitive",
+			location:    "home based - americas; home based - emea",
+			matchedRule: "EMEA",
+			want:        "home based - emea",
+		},
+		{
+			// Without an entry, there is nothing better to go on than the
+			// board's own order, so the previous behaviour has to survive.
+			name:        "falls back to the first segment when no entry matched",
+			location:    "Remote, United States; Remote, Germany",
+			matchedRule: "",
+			want:        "Remote, United States",
+		},
+		{
+			// An entry that is not present verbatim cannot be located in the
+			// string; guessing a different segment from a partial match would
+			// be worse than the fallback.
+			name:        "falls back when the entry is not verbatim in the string",
+			location:    "Remote, United States; Remote, Germany",
+			matchedRule: "Deutschland",
+			want:        "Remote, United States",
+		},
+		{
+			name:        "a single-segment location is untouched",
+			location:    "Germany",
+			matchedRule: "Germany",
+			want:        "Germany",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := locationHint(tt.location, tt.matchedRule); got != tt.want {
+				t.Errorf("locationHint(%q, %q) = %q, want %q",
+					tt.location, tt.matchedRule, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNotify_LocationRuleReachesTheTitle is the wiring half: the hint above is
+// only reachable if Match carries the entry through to the rendered title.
+func TestNotify_LocationRuleReachesTheTitle(t *testing.T) {
+	server, captured := captureServer(t, http.StatusOK, "")
+	n := NewNtfy(server.URL, "job-matches", "", nil)
+	n.HTTPClient = server.Client()
+
+	err := n.Notify(context.Background(), Match{
+		Job: model.Job{
+			Title:    "Software Engineer - Python/Golang - Kubernetes",
+			Company:  "Canonical",
+			Location: "Home Based - Americas; Home based - EMEA",
+		},
+		Score:        0.72,
+		LocationRule: "EMEA",
+	})
+	if err != nil {
+		t.Fatalf("Notify returned error: %v", err)
+	}
+
+	title := captured.headers.Get("Title")
+	if !strings.HasSuffix(title, " · Home based - EMEA") {
+		t.Errorf("Title = %q, want the workable region rather than the board's first", title)
+	}
+	if strings.Contains(title, "Americas") {
+		t.Errorf("Title = %q, want the region that rules the posting out to be gone", title)
+	}
+}
