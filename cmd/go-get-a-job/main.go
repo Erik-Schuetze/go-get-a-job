@@ -92,7 +92,17 @@ func run() int {
 	if cfg.Notify.Ntfy.TokenEnv != "" {
 		ntfyToken = os.Getenv(cfg.Notify.Ntfy.TokenEnv)
 	}
-	notifier := notify.NewNtfy(cfg.Notify.Ntfy.URL, cfg.Notify.Ntfy.Topic, ntfyToken)
+	notifier := notify.NewNtfy(cfg.Notify.Ntfy.URL, cfg.Notify.Ntfy.Topic, ntfyToken, cfg.Notify.Ntfy.MatchTiers)
+
+	// A tier that no reachable score can land in is a config mistake that is
+	// otherwise invisible: the emoji simply never appears, and there is no
+	// evidence pointing at why. Report it once, at startup.
+	if unreachable := cfg.Notify.Ntfy.UnreachableTiers(cfg.Filter.MinAIScore); len(unreachable) > 0 {
+		logger.Warn("notification tiers unreachable at the configured minAIScore",
+			"min_score", cfg.Filter.MinAIScore,
+			"tiers", unreachable,
+		)
+	}
 
 	scorer := filter.NewAIScorer(cfg.AI.BaseURL, apiKey, cfg.AI.Model)
 	scorer.Instructions = cfg.AI.Instructions

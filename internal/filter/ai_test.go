@@ -472,3 +472,60 @@ func TestAIScorer_Score_HostileFieldsStayOnTheirOwnLines(t *testing.T) {
 		t.Error("a newline in the company field reached the prompt as a real line break")
 	}
 }
+
+// TestAIScorer_Score_LocationVeto pins the asymmetry the veto depends on.
+//
+// An omitted locationOk must NOT veto, and it is the case that will actually
+// happen: a truncated or malformed model reply, a provider that drops empty
+// fields, or a model that simply forgets the key. Treating that as "location
+// is wrong" would silently discard an entire run's worth of postings, which is
+// the exact failure this program exists to prevent. Only an explicit false is
+// allowed to veto.
+func TestAIScorer_Score_LocationVeto(t *testing.T) {
+	tests := []struct {
+		name        string
+		content     string
+		wantVeto    bool
+		wantNilVeto bool
+	}{
+		{
+			name:        "an omitted locationOk does not veto",
+			content:     `{"score": 0.9, "reason": "Strong match.", "signals": []}`,
+			wantNilVeto: true,
+		},
+		{
+			name:     "an explicit false vetoes",
+			content:  `{"score": 0.9, "reason": "US-only.", "signals": [], "locationOk": false}`,
+			wantVeto: true,
+		},
+		{
+			name:    "an explicit true does not veto",
+			content: `{"score": 0.9, "reason": "Fine.", "signals": [], "locationOk": true}`,
+		},
+		{
+			name:        "an explicit null does not veto",
+			content:     `{"score": 0.9, "reason": "Unclear.", "signals": [], "locationOk": null}`,
+			wantNilVeto: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := fakeChatServer(t, tt.content, nil)
+			defer server.Close()
+
+			scorer := NewAIScorer(server.URL, "test-api-key", "deepseek-chat")
+			score, err := scorer.Score(context.Background(), model.Job{Title: "Platform Engineer"}, "profile")
+			if err != nil {
+				t.Fatalf("Score returned error: %v", err)
+			}
+
+			if got := score.VetoesLocation(); got != tt.wantVeto {
+				t.Errorf("VetoesLocation() = %v, want %v", got, tt.wantVeto)
+			}
+			if tt.wantNilVeto && score.LocationOK != nil {
+				t.Errorf("LocationOK = %v, want nil so an absent value stays distinguishable from false", *score.LocationOK)
+			}
+		})
+	}
+}

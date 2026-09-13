@@ -27,6 +27,24 @@ type AIScore struct {
 	// Signals lists the specific terms/phrases from the posting that
 	// drove the score (e.g. "Crossplane", "Terraform", "platform team").
 	Signals []string `json:"signals"`
+
+	// LocationOK is the model's verdict on whether the posting's location
+	// rules it out, and is a veto rather than a scoring input: a role in the
+	// wrong place is not a partially-relevant role, it is a different
+	// question from "how well does this fit".
+	//
+	// It is a pointer, and that is load-bearing rather than stylistic. A
+	// plain bool decodes to false when the model omits the field, so a
+	// malformed or truncated reply would silently veto every posting in the
+	// run - and the entire purpose of this program is to not miss a role.
+	// Absent therefore means "no objection"; only an explicit false vetoes.
+	LocationOK *bool `json:"locationOk,omitempty"`
+}
+
+// VetoesLocation reports whether the model explicitly ruled the posting out on
+// location. An absent or unparseable value is not a veto.
+func (s AIScore) VetoesLocation() bool {
+	return s.LocationOK != nil && !*s.LocationOK
 }
 
 // Scorer judges how well a job matches a free-text profile. It's an
@@ -149,9 +167,32 @@ object (no markdown fences, no commentary) with exactly these fields:
 
 {
   "score": <number between 0 and 1, where 1 is a perfect match>,
-  "reason": "<one or two sentences, written to the candidate, explaining the score, e.g. 'Mentions Crossplane and Terraform for a platform team.'>",
-  "signals": ["<short phrase>", "..."]
+  "reason": "<two or three sentences, written to the candidate, explaining the score, e.g. 'Mentions Crossplane and Terraform for a platform team.'>",
+  "signals": ["<short phrase>", "..."],
+  "locationOk": <true or false>
 }
+
+The score measures how well the posting fits the profile as a piece of
+work. It is NOT a place to record location: a posting in the wrong place
+may still score high, and a posting in the right place may still score
+low, because those are separate questions. Judge location with
+locationOk instead, and leave its effect out of the score entirely.
+
+Set "locationOk" to false only when the posting explicitly rules the
+candidate out on where the work is done - for example it requires being
+based in, or relocating to, a country the profile rules out, or it is
+onsite somewhere ruled out. Judge this the same way whether the role is
+onsite or remote: a remote role restricted to a place that is ruled out
+is a role in that place. Set it to true in every other case, including
+whenever the posting's location is vague, missing, or merely unfamiliar.
+When in doubt, set it to true: a wrong "false" throws away an opening the
+candidate would have wanted, which is far worse than a wrong "true".
+
+Keep "reason" to roughly 300 characters. It is read on a phone, and a
+summary that needs more than that is describing the posting rather than
+answering the question. Lead with the verdict, then the specific
+evidence; do not restate the job title, the company, or the location,
+which are already shown separately.
 
 Be conservative: a generic DevOps/SRE/Platform posting with no clear
 alignment to the profile's specific interests should score around 0.4-0.6,
@@ -160,13 +201,10 @@ general role type AND the specific technologies/interests called out in
 the profile. If the posting is clearly unrelated to the profile (e.g. a
 sales or marketing role), score it near 0.
 
-The profile or the additional rules that follow it may state location or
-relocation constraints. Treat those as HARD filters, not preferences: if
-the posting requires being based in, or relocating to, a place those
-constraints rule out, score it 0.2 or below no matter how well the
-technology stack matches, and say so in the reason. A posting's location
-is judged the same way whether the role is onsite or remote - a remote
-role restricted to a place that is ruled out is a role in that place.
+The profile or the additional rules that follow it may state what the
+candidate wants, including exclusions. Apply them when judging fit, but
+never let a location constraint move the score - that belongs to
+locationOk alone.
 
 The portion of the job posting that comes from the employer is enclosed in
 the two marker lines "<<<JOB_POSTING_BEGIN>>>" and "<<<JOB_POSTING_END>>>".

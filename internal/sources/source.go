@@ -204,6 +204,55 @@ func stripHTML(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// joinNonEmpty joins the non-blank values with sep, collapsing exact
+// duplicates.
+//
+// It exists because ATS APIs routinely publish the same fact in two fields -
+// Ashby fills both department and team with "Engineering" for many postings -
+// and rendering both would produce a metadata line that looks like a bug.
+// Deduplication happens on the collapsed, case-insensitive value so
+// "Engineering" and "engineering" don't survive as a pair.
+func joinNonEmpty(sep string, values ...string) string {
+	parts := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		key := strings.ToLower(v)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		parts = append(parts, v)
+	}
+	return strings.Join(parts, sep)
+}
+
+// firstNonEmpty returns the first value that is non-blank after trimming.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v = strings.TrimSpace(v); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// boolToRemote renders a board's boolean "this posting is remote" flag as the
+// wording the connectors share.
+//
+// A false flag deliberately yields "" rather than "On-site": several boards
+// predate the field and default it to false, so asserting on-site from a
+// missing value would state a confident claim the data does not support.
+func boolToRemote(remote bool) string {
+	if remote {
+		return "Remote"
+	}
+	return ""
+}
+
 // parseRFC3339Best parses an RFC3339 timestamp (with or without fractional
 // seconds), returning the zero time on failure rather than an error -
 // PostedAt is best-effort across sources and should never fail a fetch.

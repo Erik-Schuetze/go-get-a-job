@@ -296,6 +296,133 @@ type NtfyConfig struct {
 	// access token used as a Bearer auth header. Optional: omit if the
 	// topic/server doesn't require auth.
 	TokenEnv string `yaml:"tokenEnv,omitempty"`
+
+	// MatchTiers maps a job's AI score onto the emoji and ntfy priority its
+	// notification carries. Optional: omitting it uses DefaultMatchTiers.
+	//
+	// It is config rather than code because the right boundaries are a
+	// property of the operator's own corpus, not of the program: the
+	// defaults were chosen from a measured 46-match distribution, and a
+	// different company list will produce a different shape.
+	MatchTiers []MatchTier `yaml:"matchTiers,omitempty"`
+}
+
+// MatchTier is one band of the score-to-presentation mapping.
+type MatchTier struct {
+	// MinScore is the lowest score this tier covers. Tiers are ordered high
+	// to low and the first one whose MinScore is <= the job's score wins.
+	//
+	// It is a pointer so that "not configured" stays distinguishable from
+	// "configured as 0": the catch-all tier legitimately omits it, and a
+	// plain float64 would silently turn every omitted tier into a catch-all
+	// instead of reporting the mistake.
+	MinScore *float64 `yaml:"minScore,omitempty"`
+
+	// Emoji is what the notification title is prefixed with.
+	Emoji string `yaml:"emoji"`
+
+	// Priority is ntfy's own 1-5 scale (1 min, 5 urgent). Clients expose
+	// one notification channel per priority, which is what lets the operator
+	// mute the low tiers and keep the top one loud.
+	Priority int `yaml:"priority"`
+}
+
+// DefaultMatchTiers is the tier mapping used when notify.ntfy.matchTiers is
+// omitted entirely, so every existing config keeps working unchanged.
+//
+// The two boundaries are not round numbers picked for looks. Measured over 46
+// real notified matches, scores cluster at 0.95, 0.85 and 0.72, with 14
+// matches sitting exactly on 0.85 and 25 exactly on 0.72 - so 0.72 is a pile,
+// not a boundary, and putting a tier edge there would flip half the corpus at
+// once the first time the model shifted by a thousandth. 0.85 and 0.95 both
+// fall in genuine gaps.
+func DefaultMatchTiers() []MatchTier {
+	great, perfect := 0.85, 0.95
+	return []MatchTier{
+		{MinScore: &perfect, Emoji: "💎", Priority: 5},
+		{MinScore: &great, Emoji: "⭐", Priority: 4},
+		{Emoji: "💼", Priority: 3},
+	}
+}
+
+// Bounds on a matchTiers list. Ten is far more than any phone can usefully
+// distinguish, and every extra tier is another chance for two of them to be
+// unreachable in practice.
+const maxMatchTiers = 10
+
+// maxEmojiRunes bounds a configured emoji. Real emoji are 1-2 runes (a flag or
+// a ZWJ sequence runs longer), so the cap only has to be generous enough to
+// accept legitimate ones while still refusing a paragraph of text in a title.
+const maxEmojiRunes = 8
+
+// MatchTierFor returns the tier covering score: the first entry, in configured
+// order, whose MinScore is <= score, or the catch-all when every MinScore is
+// above it. Validation guarantees a catch-all exists, so this is total.
+func (n NtfyConfig) MatchTierFor(score float64) MatchTier {
+	for _, t := range n.MatchTiers {
+		if t.MinScore == nil || score >= *t.MinScore {
+			return t
+		}
+	}
+	// Unreachable for a validated config; a zero tier is a safer answer than
+	// a panic in a job watcher, whose whole purpose is to not go quiet.
+	if len(n.MatchTiers) > 0 {
+		return n.MatchTiers[len(n.MatchTiers)-1]
+	}
+	return MatchTier{Emoji: "💼", Priority: 3}
+}
+
+// UnreachableTiers reports the tiers that no posting can ever be placed in,
+// because their MinScore sits below the threshold a posting must clear to be
+// notified at all.
+//
+// This is not a validation error - the tiers are still well-formed, and the
+// operator may be lowering minAIScore next week - but it is almost always a
+// typo, and a tier that can never fire is otherwise completely invisible: it
+// simply shows up as an emoji that never arrives.
+func (n NtfyConfig) UnreachableTiers(minAIScore float64) []MatchTier {
+	var out []MatchTier
+	for _, t := range n.MatchTiers {
+		if t.MinScore != nil && *t.MinScore < minAIScore {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func (n NtfyConfig) validateMatchTiers() error {
+	if len(n.MatchTiers) > maxMatchTiers {
+		return fmt.Errorf("notify.ntfy.matchTiers: %d entries is more than the %d allowed", len(n.MatchTiers), maxMatchTiers)
+	}
+
+	var prev *float64
+	for i, t := range n.MatchTiers {
+		if strings.TrimSpace(t.Emoji) == "" {
+			return fmt.Errorf("notify.ntfy.matchTiers[%d]: emoji is required", i)
+		}
+		if numEmojiRunes := utf8.RuneCountInString(t.Emoji); numEmojiRunes > maxEmojiRunes {
+			return fmt.Errorf("notify.ntfy.matchTiers[%d]: emoji is %d characters, more than the %d allowed", i, numEmojiRunes, maxEmojiRunes)
+		}
+		if t.Priority < 1 || t.Priority > 5 {
+			return fmt.Errorf("notify.ntfy.matchTiers[%d]: priority must be 1-5 (ntfy's scale), got %d", i, t.Priority)
+		}
+
+		if t.MinScore != nil {
+			if *t.MinScore < 0 || *t.MinScore > 1 {
+				return fmt.Errorf("notify.ntfy.matchTiers[%d]: minScore must be between 0 and 1, got %v", i, *t.MinScore)
+			}
+			if prev != nil && *t.MinScore >= *prev {
+				return fmt.Errorf("notify.ntfy.matchTiers[%d]: minScore %v must be lower than the previous tier's %v (tiers are matched top-down, so an ascending list would make the later entry dead)", i, *t.MinScore, *prev)
+			}
+			prev = t.MinScore
+		}
+	}
+
+	if len(n.MatchTiers) > 0 && n.MatchTiers[len(n.MatchTiers)-1].MinScore != nil {
+		return fmt.Errorf("notify.ntfy.matchTiers: the last entry must omit minScore so it acts as the catch-all; without one, a notified match could end up with no emoji")
+	}
+
+	return nil
 }
 
 // StoreConfig selects and configures the persistence backend.
@@ -368,6 +495,14 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Notify.Type == "" {
 		c.Notify.Type = "ntfy"
+	}
+	// Deliberately only when the whole list is absent. A partially
+	// configured list is a mistake to report, not to silently pad: the
+	// operator who wrote two tiers meant two tiers, and appending a default
+	// catch-all would hide that they no longer control which emoji a
+	// notification gets.
+	if len(c.Notify.Ntfy.MatchTiers) == 0 && c.Notify.Type == "ntfy" {
+		c.Notify.Ntfy.MatchTiers = DefaultMatchTiers()
 	}
 }
 
@@ -531,6 +666,9 @@ func (c *Config) Validate() error {
 		}
 		if c.Notify.Ntfy.TokenEnv != "" && !envRE.MatchString(c.Notify.Ntfy.TokenEnv) {
 			return fmt.Errorf("notify.ntfy.tokenEnv: %q is not a valid environment variable name", c.Notify.Ntfy.TokenEnv)
+		}
+		if err := c.Notify.Ntfy.validateMatchTiers(); err != nil {
+			return err
 		}
 	default:
 		return fmt.Errorf("notify.type: unknown or unsupported type %q", c.Notify.Type)

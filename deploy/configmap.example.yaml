@@ -97,6 +97,8 @@ data:
         url: http://ntfy.go-get-a-job.svc.cluster.local
         topic: job-matches
         tokenEnv: NTFY_TOKEN
+        # Optional: per-score emoji and priority. Omit for the built-in
+        # defaults. The full annotated list is in config/config.example.yaml.
 
     store:
       type: sqlite

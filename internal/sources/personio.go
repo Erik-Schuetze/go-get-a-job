@@ -138,6 +138,9 @@ func (p *Personio) Fetch(ctx context.Context) ([]model.Job, error) {
 			URL:         jobURL,
 			Description: personioDescription(pos),
 			PostedAt:    parseRFC3339Best(pos.CreatedAt),
+
+			Department:     joinNonEmpty(" · ", pos.Department, pos.Subcompany),
+			EmploymentType: pos.Schedule,
 		})
 	}
 	return jobs, nil

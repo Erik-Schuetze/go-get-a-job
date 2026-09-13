@@ -708,3 +708,154 @@ func TestLoad_DeployExampleConfigMap(t *testing.T) {
 		t.Fatal("expected the embedded config to define at least one source")
 	}
 }
+
+// TestValidate_MatchTiers covers the mistakes that are otherwise invisible at
+// runtime. Each one fails silently in a different way: a descending list makes
+// the later tiers dead, a missing catch-all leaves a notified match with no
+// emoji at all, and a priority of 0 is not on ntfy's 1-5 scale. None of them
+// produce an error or a log line once the CronJob is running - just
+// notifications that look subtly wrong.
+func TestValidate_MatchTiers(t *testing.T) {
+	score := func(f float64) *float64 { return &f }
+
+	tests := []struct {
+		name    string
+		tiers   []MatchTier
+		wantErr bool
+	}{
+		{
+			name:  "the defaults are valid",
+			tiers: DefaultMatchTiers(),
+		},
+		{
+			name: "a well-formed custom list is accepted",
+			tiers: []MatchTier{
+				{MinScore: score(0.9), Emoji: "🔥", Priority: 5},
+				{Emoji: "📋", Priority: 2},
+			},
+		},
+		{
+			name: "an ascending list is rejected",
+			tiers: []MatchTier{
+				{MinScore: score(0.5), Emoji: "⭐", Priority: 4},
+				{MinScore: score(0.8), Emoji: "💎", Priority: 5},
+				{Emoji: "💼", Priority: 3},
+			},
+			wantErr: true,
+		},
+		{
+			name: "two tiers sharing a boundary are rejected",
+			tiers: []MatchTier{
+				{MinScore: score(0.8), Emoji: "⭐", Priority: 4},
+				{MinScore: score(0.8), Emoji: "💎", Priority: 5},
+				{Emoji: "💼", Priority: 3},
+			},
+			wantErr: true,
+		},
+		{
+			name: "a list with no catch-all is rejected",
+			tiers: []MatchTier{
+				{MinScore: score(0.9), Emoji: "💎", Priority: 5},
+				{MinScore: score(0.8), Emoji: "⭐", Priority: 4},
+			},
+			wantErr: true,
+		},
+		{
+			name:    "an empty emoji is rejected",
+			tiers:   []MatchTier{{Emoji: "   ", Priority: 3}},
+			wantErr: true,
+		},
+		{
+			name:    "an over-long emoji is rejected",
+			tiers:   []MatchTier{{Emoji: strings.Repeat("x", maxEmojiRunes+1), Priority: 3}},
+			wantErr: true,
+		},
+		{
+			name:    "priority 0 is rejected",
+			tiers:   []MatchTier{{Emoji: "💼", Priority: 0}},
+			wantErr: true,
+		},
+		{
+			name:    "priority 6 is rejected",
+			tiers:   []MatchTier{{Emoji: "💼", Priority: 6}},
+			wantErr: true,
+		},
+		{
+			name:    "a minScore above 1 is rejected",
+			tiers:   []MatchTier{{MinScore: score(1.5), Emoji: "💼", Priority: 3}},
+			wantErr: true,
+		},
+		{
+			name: "more tiers than a phone can distinguish is rejected",
+			tiers: func() []MatchTier {
+				tiers := make([]MatchTier, 0, maxMatchTiers+1)
+				for i := 0; i < maxMatchTiers; i++ {
+					tiers = append(tiers, MatchTier{MinScore: score(1 - float64(i)/100), Emoji: "⭐", Priority: 3})
+				}
+				return append(tiers, MatchTier{Emoji: "💼", Priority: 3})
+			}(),
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.Notify.Ntfy.MatchTiers = tt.tiers
+
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatal("expected matchTiers to be rejected")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("expected matchTiers to be accepted, got %v", err)
+			}
+		})
+	}
+}
+
+// TestMatchTiers_DefaultsSeededWhenOmitted keeps every existing config working:
+// matchTiers is new and optional, so a config that predates it has to end up
+// with the defaults rather than with an empty list and no emoji.
+func TestMatchTiers_DefaultsSeededWhenOmitted(t *testing.T) {
+	cfg := baseValidConfig()
+	cfg.Notify.Ntfy.MatchTiers = nil
+	cfg.applyDefaults()
+
+	if len(cfg.Notify.Ntfy.MatchTiers) == 0 {
+		t.Fatal("expected the default matchTiers to be seeded")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected the seeded defaults to validate, got %v", err)
+	}
+}
+
+// TestUnreachableTiers pins the case that is a config mistake rather than a
+// validation error: a tier whose boundary sits below minAIScore can never be
+// reached, because a posting below the threshold is never notified at all. It
+// is a warning rather than a failure - the operator may be about to lower the
+// threshold - but it has to be reported, since the only other symptom is an
+// emoji that never arrives.
+func TestUnreachableTiers(t *testing.T) {
+	score := func(f float64) *float64 { return &f }
+	ntfy := NtfyConfig{MatchTiers: []MatchTier{
+		{MinScore: score(0.95), Emoji: "💎", Priority: 5},
+		{MinScore: score(0.85), Emoji: "⭐", Priority: 4},
+		{MinScore: score(0.4), Emoji: "👀", Priority: 2},
+		{Emoji: "💼", Priority: 3},
+	}}
+
+	got := ntfy.UnreachableTiers(0.6)
+	if len(got) != 1 || got[0].Emoji != "👀" {
+		t.Fatalf("UnreachableTiers(0.6) = %v, want just the 0.4 tier", got)
+	}
+	if got := ntfy.UnreachableTiers(0.1); len(got) != 0 {
+		t.Fatalf("UnreachableTiers(0.1) = %v, want none", got)
+	}
+	// The catch-all has no boundary, so it is reachable at any threshold.
+	for _, t2 := range ntfy.UnreachableTiers(1.0) {
+		if t2.MinScore == nil {
+			t.Error("the catch-all tier must never be reported as unreachable")
+		}
+	}
+}

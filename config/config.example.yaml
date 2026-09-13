@@ -209,6 +209,34 @@ notify:
     # non-admin user with access to just this topic - see the README.
     tokenEnv: NTFY_TOKEN
 
+    # Optional: which emoji and ntfy priority each score band gets. Omit the
+    # whole list and the defaults below apply, so an existing config keeps
+    # working unchanged.
+    #
+    # These are config rather than code because the right boundaries belong to
+    # your own company list, not to the program: the defaults were chosen from
+    # the scores a real 47-company config produced, and a different list will
+    # have a different shape.
+    #
+    # Rules: highest minScore first, and the last entry MUST omit minScore so
+    # that every notified posting gets an emoji.
+    matchTiers:
+      # A tier whose minScore is below filter.minAIScore can never be reached -
+      # nothing below the threshold is notified at all. That is not an error,
+      # but the app logs a warning at startup, because the only other symptom
+      # is an emoji that never arrives.
+      - minScore: 0.95
+        emoji: "💎"
+        # ntfy's own 1-5 scale (1 min, 5 urgent). Clients expose one
+        # notification channel per priority, so a low tier can be muted while
+        # the top one still rings.
+        priority: 5
+      - minScore: 0.85
+        emoji: "⭐"
+        priority: 4
+      - emoji: "💼"
+        priority: 3
+
 store:
   type: sqlite
   path: /data/go-get-a-job.db

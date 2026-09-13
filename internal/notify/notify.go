@@ -10,11 +10,35 @@ import (
 	"github.com/Erik-Schuetze/go-get-a-job/internal/model"
 )
 
+// Match is everything one delivered match carries: the posting itself, the
+// scorer's verdict on it, and the terms the scorer said drove that verdict.
+//
+// It is a struct rather than a longer argument list because this is the third
+// piece of information the notifier has needed and the fourth would otherwise
+// be another parameter on every implementation and every test fake.
+type Match struct {
+	Job model.Job
+
+	// Score is the AI scorer's 0-1 judgment, and is what selects the emoji
+	// and priority a notification is presented with. It is deliberately the
+	// only input to that decision: letting a notifier re-derive importance
+	// from anything else would put two definitions of "how good is this" in
+	// the codebase.
+	Score float64
+
+	// Reason is the scorer's human-readable explanation. May be empty, in
+	// which case implementations fall back to a generic message.
+	Reason string
+
+	// Signals lists the specific terms that drove the score, for display
+	// alongside the reason. May be empty.
+	Signals []string
+}
+
 // Notifier delivers notifications about matched jobs and run failures.
 type Notifier interface {
-	// Notify delivers a single job match, including the AI scorer's
-	// human-readable reason for the match.
-	Notify(ctx context.Context, job model.Job, reason string) error
+	// Notify delivers a single job match.
+	Notify(ctx context.Context, match Match) error
 
 	// NotifyFailure delivers a best-effort alert that a run failed
 	// unexpectedly, so a broken watcher doesn't silently go quiet forever.

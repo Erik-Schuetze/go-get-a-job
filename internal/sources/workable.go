@@ -117,6 +117,10 @@ func (w *Workable) Fetch(ctx context.Context) ([]model.Job, error) {
 			URL:         workableURL(j),
 			Description: workableDescription(j),
 			PostedAt:    workableTime(j.PublishedOn, j.CreatedAt),
+
+			Department:     j.Department,
+			WorkplaceType:  boolToRemote(j.Telecommuting),
+			EmploymentType: j.EmploymentType,
 		})
 	}
 	return jobs, nil

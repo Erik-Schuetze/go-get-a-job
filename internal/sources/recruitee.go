@@ -63,6 +63,13 @@ type recruiteeOffer struct {
 	Description string `json:"description"`
 	Remote      bool   `json:"remote"`
 	CreatedAt   string `json:"created_at"`
+
+	// EmploymentTypeCode is Recruitee's slug ("fulltime", "contract");
+	// EmploymentType is its human-readable twin. The readable one is
+	// preferred and the code is the fallback, because a board that only
+	// fills the code should still show the operator something. Display only.
+	EmploymentTypeCode string `json:"employment_type_code"`
+	EmploymentType     string `json:"employment_type"`
 }
 
 // Fetch retrieves every open posting on this company's Recruitee board.
@@ -107,6 +114,10 @@ func (r *Recruitee) Fetch(ctx context.Context) ([]model.Job, error) {
 			URL:         o.CareersURL,
 			Description: stripHTML(o.Description),
 			PostedAt:    recruiteeTime(o.CreatedAt),
+
+			Department:     o.Department,
+			WorkplaceType:  boolToRemote(o.Remote),
+			EmploymentType: firstNonEmpty(o.EmploymentType, o.EmploymentTypeCode),
 		})
 	}
 	return jobs, nil
