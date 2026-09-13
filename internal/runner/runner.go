@@ -45,14 +45,15 @@ type Summary struct {
 	ProcessErrors []error
 
 	// FilteredByLocation counts postings dropped by the location
-	// pre-filter, whether by a deny entry or by an unmatched location. It
-	// is reported separately from the keyword pre-filter because a
-	// too-broad location rule is invisible otherwise: the run simply looks
+	// pre-filter, which under the whitelist model means an unmatched
+	// location only: one that names a place the accept list does not cover.
+	// It is reported separately from the keyword pre-filter because a
+	// too-narrow accept list is invisible otherwise: the run simply looks
 	// like a quiet day.
 	FilteredByLocation int
 
 	// LocationRejections names the first few location rejections, for an
-	// end-of-run summary. Bounded so a misconfigured allow list cannot turn
+	// end-of-run summary. Bounded so a misconfigured accept list cannot turn
 	// the log into a wall of text.
 	LocationRejections []LocationRejection
 }
@@ -203,7 +204,7 @@ func (r *Runner) processJob(ctx context.Context, job model.Job, now time.Time) (
 	// The location check is re-run separately when the combined pre-filter
 	// rejects, so a rejection can be attributed to the location rules
 	// rather than to the keyword list. Without that attribution, a
-	// too-broad or too-narrow location rule is invisible in the logs.
+	// too-narrow accept list is invisible in the logs.
 	if !filter.Passes(job, r.Filter) {
 		if err := r.Store.Save(ctx, rec); err != nil {
 			return processResult{}, fmt.Errorf("saving filtered-out job: %w", err)

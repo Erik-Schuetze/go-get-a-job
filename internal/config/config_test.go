@@ -34,8 +34,7 @@ sources:
 filter:
   keywords: ["platform engineer", "crossplane"]
   locations:
-    allow: ["Germany", "EMEA", "Remote (Global)"]
-    deny: ["Canada", "United States"]
+    accept: ["Germany", "EMEA", "European Union"]
     unmatched: reject
   minAIScore: 0.8
 
@@ -105,11 +104,8 @@ func TestLoad_LocationsParsed(t *testing.T) {
 	}
 
 	locs := cfg.Filter.Locations
-	if len(locs.Allow) != 3 || locs.Allow[0] != "Germany" {
-		t.Errorf("expected the allow list to be parsed in order, got %#v", locs.Allow)
-	}
-	if len(locs.Deny) != 2 || locs.Deny[0] != "Canada" {
-		t.Errorf("expected the deny list to be parsed in order, got %#v", locs.Deny)
+	if len(locs.Accept) != 3 || locs.Accept[0] != "Germany" {
+		t.Errorf("expected the accept list to be parsed in order, got %#v", locs.Accept)
 	}
 	if locs.Unmatched != LocationUnmatchedReject {
 		t.Errorf("expected unmatched %q, got %q", LocationUnmatchedReject, locs.Unmatched)
@@ -126,7 +122,7 @@ func TestLoad_LocationsParsed(t *testing.T) {
 // LocationConfig.UnmarshalYAML replaces it.
 func TestLoad_LocationsOldListFormFailsWithGuidance(t *testing.T) {
 	old := strings.Replace(validConfig,
-		"  locations:\n    allow: [\"Germany\", \"EMEA\", \"Remote (Global)\"]\n    deny: [\"Canada\", \"United States\"]\n    unmatched: reject\n",
+		"  locations:\n    accept: [\"Germany\", \"EMEA\", \"European Union\"]\n    unmatched: reject\n",
 		"  locations: [\"Germany\", \"Remote\"]\n", 1)
 	if old == validConfig {
 		t.Fatal("test setup failed: the locations block was not found in validConfig")
@@ -136,10 +132,54 @@ func TestLoad_LocationsOldListFormFailsWithGuidance(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the old list form to fail, got nil")
 	}
-	for _, want := range []string{"allow", "deny", "v0.2.0"} {
+	for _, want := range []string{"accept", "v0.2.0"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("expected the migration error to mention %q, got: %v", want, err)
 		}
+	}
+}
+
+// TestLoad_LocationsRemovedKeysFailWithGuidance covers the v0.2.0 -> v0.3.0
+// upgrade path. Both keys used to change which postings were scored, so
+// dropping either one silently would leave a run that looks healthy while
+// filtering on something the operator did not write.
+func TestLoad_LocationsRemovedKeysFailWithGuidance(t *testing.T) {
+	tests := []struct {
+		name    string
+		block   string
+		wantErr []string
+	}{
+		{
+			name:    "allow is renamed",
+			block:   "  locations:\n    allow: [\"Germany\"]\n",
+			wantErr: []string{"filter.locations.allow", "filter.locations.accept"},
+		},
+		{
+			name:    "deny is removed",
+			block:   "  locations:\n    accept: [\"Germany\"]\n    deny: [\"Canada\"]\n",
+			wantErr: []string{"filter.locations.deny", "whitelist"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			replaced := strings.Replace(validConfig,
+				"  locations:\n    accept: [\"Germany\", \"EMEA\", \"European Union\"]\n    unmatched: reject\n",
+				tt.block, 1)
+			if replaced == validConfig {
+				t.Fatal("test setup failed: the locations block was not found in validConfig")
+			}
+
+			_, err := Load(writeTempConfig(t, replaced))
+			if err == nil {
+				t.Fatal("expected a removed key to fail, got nil")
+			}
+			for _, want := range tt.wantErr {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("expected the migration error to mention %q, got: %v", want, err)
+				}
+			}
+		})
 	}
 }
 
@@ -174,24 +214,23 @@ func TestValidate_LocationsUnmatchedMode(t *testing.T) {
 func TestValidate_LocationEntries(t *testing.T) {
 	tests := []struct {
 		name    string
-		allow   []string
-		deny    []string
+		accept  []string
 		wantErr string
 	}{
-		{"ordinary entries", []string{"Germany", "Remote (Global)"}, []string{"Canada"}, ""},
-		{"two characters is the minimum", []string{"US"}, nil, ""},
-		{"blank entry", []string{""}, nil, "must not be blank"},
-		{"whitespace-only entry", nil, []string{"   "}, "must not be blank"},
-		{"single character entry", []string{"D"}, nil, "too short"},
-		{"oversized entry", nil, []string{strings.Repeat("x", maxLocationEntryChars+1)}, "at most"},
-		{"too many entries", makeEntries(maxLocationEntries + 1), nil, "more than"},
+		{"ordinary entries", []string{"Germany", "European Union"}, ""},
+		{"two characters is the minimum", []string{"US"}, ""},
+		{"empty list disables the filter", nil, ""},
+		{"blank entry", []string{""}, "must not be blank"},
+		{"whitespace-only entry", []string{"   "}, "must not be blank"},
+		{"single character entry", []string{"D"}, "too short"},
+		{"oversized entry", []string{strings.Repeat("x", maxLocationEntryChars+1)}, "at most"},
+		{"too many entries", makeEntries(maxLocationEntries + 1), "more than"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := baseValidConfig()
-			cfg.Filter.Locations.Allow = tt.allow
-			cfg.Filter.Locations.Deny = tt.deny
+			cfg.Filter.Locations.Accept = tt.accept
 
 			err := cfg.Validate()
 			if tt.wantErr == "" {

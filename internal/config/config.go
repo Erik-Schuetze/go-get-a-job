@@ -71,20 +71,19 @@ type FilterConfig struct {
 
 // Unmatched modes for LocationConfig.Unmatched.
 const (
-	// LocationUnmatchedReject drops a posting whose location matches
-	// neither list. This is the default: the allow list is treated as the
-	// full set of places worth considering.
+	// LocationUnmatchedReject drops a posting whose location names a place
+	// that is not accepted. This is the default: the accept list is treated
+	// as the full set of places worth considering.
 	LocationUnmatchedReject = "reject"
 
 	// LocationUnmatchedPass hands such a posting to the AI scorer instead.
-	// Useful when a posting's location field is often uninformative - a
-	// bare "Remote", say - and the profile is trusted to judge it. It costs
-	// one AI call per posting that would otherwise have been dropped.
+	// It costs one AI call per posting that would otherwise have been
+	// dropped, including foreign onsite roles.
 	LocationUnmatchedPass = "pass"
 )
 
-// Bounds on operator-supplied location lists and AI instructions. The config
-// lives in a ConfigMap, so these keep a mistaken or hostile edit from
+// Bounds on operator-supplied location entries and AI instructions. The
+// config lives in a ConfigMap, so these keep a mistaken or hostile edit from
 // turning into unbounded work or unbounded log and prompt volume.
 const (
 	maxLocationEntries    = 200
@@ -93,41 +92,60 @@ const (
 )
 
 // LocationConfig decides which postings survive the cheap location
-// pre-filter, by matching a posting's location string against two lists of
-// place names.
+// pre-filter, by matching a posting's location string against a single list
+// of places the operator can legally work from.
 //
-// There is deliberately no special handling of the word "remote" anywhere in
-// this pipeline: a posting located "Remote - Canada" is judged exactly like
-// one located "Toronto, Canada", because that is what the constraint really
-// is. A genuinely location-free posting ("Remote", "Worldwide") is handled by
-// listing the phrasing you accept in Allow, or by setting Unmatched to pass
-// and letting the AI scorer decide.
+// It is a whitelist, not an allow/deny pair. Naming an accepted place is what
+// sends a posting on to the AI scorer; nothing is accepted on a technicality,
+// and there is no deny list to keep in sync - a place that is not listed
+// simply does not match, so "Remote - Canada" cannot ride in on anything.
+//
+// Remote is deliberately not something the operator enumerates here. A
+// location that signals remote, is empty, or is a filler value like "N/A"
+// always reaches the AI scorer (see filter.MatchLocation for why): listing
+// every phrasing a portal might use for "anywhere" is not a solvable
+// problem, and the scorer already carries the relocation rule.
 type LocationConfig struct {
-	// Allow is an OR-matched list of locations that are acceptable, e.g.
-	// "Germany", "EMEA", "Remote (Global)". Matching is word-boundary aware
-	// and case-insensitive, so "US" matches "Austin, US" but not
-	// "Australia". Empty disables the allow half of the check: every
-	// location is acceptable (subject to Deny).
-	Allow []string `yaml:"allow"`
+	// Accept is an OR-matched list of places the operator can legally work
+	// from, e.g. "Germany", "EMEA", "European Union". Matching is
+	// word-boundary aware and case-insensitive, so "US" matches "Austin,
+	// US" but not "Australia", and "Remote - Germany" matches "Germany".
+	// Naming an accepted place sends the posting to the AI scorer. Empty
+	// disables the location pre-filter: every location then proceeds to the
+	// scorer.
+	Accept []string `yaml:"accept"`
 
-	// Deny is an OR-matched list of locations that always reject, using the
-	// same matching rules as Allow. Deny wins: a posting is dropped when it
-	// matches Deny even if it also matches Allow, which is what stops
-	// "Remote - Canada" from riding in on an Allow entry of "Remote".
-	Deny []string `yaml:"deny"`
-
-	// Unmatched decides what happens to a posting that matches neither
-	// list: "reject" (default) or "pass". It has no effect while Allow is
-	// empty, since nothing can be unmatched then.
+	// Unmatched decides what happens to a posting whose location names a
+	// real place that is not accepted: "reject" (default) or "pass". It has
+	// no effect while Accept is empty, since the pre-filter is then
+	// disabled.
+	//
+	// A remote-signalling, empty, or uninformative location does not reach
+	// this setting: it always proceeds to the scorer, because the
+	// pre-filter cannot judge where such a role legally is and must not
+	// drop one by guessing.
 	Unmatched string `yaml:"unmatched"`
 }
 
-// UnmarshalYAML gives the removed list form of filter.locations a useful
-// error. Without it, yaml.v3 reports "cannot unmarshal !!seq into
-// config.LocationConfig", which says nothing about what to write instead.
+// UnmarshalYAML gives the removed forms of filter.locations a useful error
+// instead of leaving yaml.v3 to either reject them unintelligibly or drop
+// them silently. A silently ignored key is worse here than anywhere else in
+// the config: losing "accept" or "deny" quietly changes which postings get
+// scored, with nothing else in the run to signal that the key did nothing.
 func (l *LocationConfig) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind == yaml.SequenceNode {
-		return fmt.Errorf("filter.locations is now a mapping with 'allow' and/or 'deny' lists: as of v0.2.0 a plain list is no longer accepted, and the entries that used to be there belong under 'allow'")
+		return fmt.Errorf("filter.locations is now a mapping with an 'accept' list: as of v0.2.0 a plain list is no longer accepted, and the entries that used to be there belong under 'accept'")
+	}
+
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			switch node.Content[i].Value {
+			case "allow":
+				return fmt.Errorf("filter.locations.allow was renamed to filter.locations.accept in v0.3.0: rename the key, the entries themselves are unchanged")
+			case "deny":
+				return fmt.Errorf("filter.locations.deny was removed in v0.3.0: 'accept' is now a whitelist of the places you can work from, so a place you cannot work from no longer needs listing")
+			}
+		}
 	}
 
 	// A local alias type, so decoding does not recurse back into this
@@ -141,7 +159,7 @@ func (l *LocationConfig) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
-// validate checks the location lists and the unmatched mode. It is called by
+// validate checks the accept list and the unmatched mode. It is called by
 // Config.Validate.
 func (l LocationConfig) validate() error {
 	switch l.Unmatched {
@@ -150,27 +168,19 @@ func (l LocationConfig) validate() error {
 		return fmt.Errorf("filter.locations.unmatched: %q is not one of %q or %q", l.Unmatched, LocationUnmatchedReject, LocationUnmatchedPass)
 	}
 
-	for _, list := range []struct {
-		field   string
-		entries []string
-	}{
-		{"filter.locations.allow", l.Allow},
-		{"filter.locations.deny", l.Deny},
-	} {
-		if len(list.entries) > maxLocationEntries {
-			return fmt.Errorf("%s: %d entries is more than the %d allowed", list.field, len(list.entries), maxLocationEntries)
+	if len(l.Accept) > maxLocationEntries {
+		return fmt.Errorf("filter.locations.accept: %d entries is more than the %d allowed", len(l.Accept), maxLocationEntries)
+	}
+	for i, entry := range l.Accept {
+		trimmed := strings.TrimSpace(entry)
+		if trimmed == "" {
+			return fmt.Errorf("filter.locations.accept[%d]: entries must not be blank", i)
 		}
-		for i, entry := range list.entries {
-			trimmed := strings.TrimSpace(entry)
-			if trimmed == "" {
-				return fmt.Errorf("%s[%d]: entries must not be blank", list.field, i)
-			}
-			if utf8.RuneCountInString(trimmed) < 2 {
-				return fmt.Errorf("%s[%d]: %q is too short to identify a location", list.field, i, trimmed)
-			}
-			if utf8.RuneCountInString(trimmed) > maxLocationEntryChars {
-				return fmt.Errorf("%s[%d]: entries must be at most %d characters", list.field, i, maxLocationEntryChars)
-			}
+		if utf8.RuneCountInString(trimmed) < 2 {
+			return fmt.Errorf("filter.locations.accept[%d]: %q is too short to identify a location", i, trimmed)
+		}
+		if utf8.RuneCountInString(trimmed) > maxLocationEntryChars {
+			return fmt.Errorf("filter.locations.accept[%d]: entries must be at most %d characters", i, maxLocationEntryChars)
 		}
 	}
 

@@ -77,10 +77,12 @@ sources:
   #   displayName: "Apple"
 
 filter:
-  # Cheap pre-filter: a job's title+description must match at least one of
-  # these (case-insensitive) before it's ever sent to the AI scorer. Keep
-  # this broad — it's just here to skip obviously-irrelevant postings
-  # cheaply; the AI profile below does the real relevance judgment.
+  # Recall gate: a job's title+description must match at least one of these
+  # (case-insensitive, OR-matched) before it's ever sent to the AI scorer.
+  # Keep this broad - it exists to skip obviously-irrelevant postings cheaply,
+  # so list every adjacent job title you'd consider (here: "sre", "site
+  # reliability", "devops"), not just the one you'd ideally take. How much you
+  # want each of them is what `ai.profile` below is for.
   keywords:
     - "go developer"
     - "golang"
@@ -91,34 +93,34 @@ filter:
     - "grpc"
     - "api"
 
-  # Where you are willing to work. Matching is case-insensitive and
-  # word-boundary aware ("US" matches "Austin, US" but not "Australia"), and
-  # these are phrases, so "Remote (Global)" is one entry.
+  # Where you are legally able to work. This is a whitelist: naming a place
+  # here is what sends a posting to the AI scorer, and a location that names
+  # any other place is dropped before it costs an AI call. There is no `deny`
+  # list, so nothing has to be kept in sync when a new country shows up.
   #
-  # There is no special handling of the word "remote": a posting located
-  # "Remote - Canada" is treated exactly like one located "Toronto, Canada",
-  # because that is what it is. So list the remote phrasings that genuinely
-  # mean anywhere, and put the places you cannot work in `deny` - deny always
-  # wins, even when `allow` also matches.
+  # Matching is case-insensitive and word-boundary aware ("US" matches
+  # "Austin, US" but not "Australia"), and entries are phrases ("European
+  # Union", "EMEA"). Country and region names only - do not list remote
+  # phrasings here, see below.
   locations:
-    # Leave `allow` empty ([]) to skip the allow half of the check entirely.
-    allow:
+    # Leave `accept` empty ([]) to skip location filtering entirely.
+    accept:
       - "Germany"
       - "EMEA"
       - "European Union"
-      - "Remote (Global)"
-      - "Worldwide"
-    # Places to reject outright, whatever else the posting says. This is what
-    # keeps a role that only looks remote from getting through.
-    deny:
-      - "United States"
-      - "Canada"
-    # What to do with a location that matches neither list - typically a bare
-    # "Remote", which says nothing about where you may legally be based.
-    # "reject" is the default and drops it. "pass" hands it to the AI scorer
-    # instead, which costs one AI call per posting but lets the profile and
-    # `ai.instructions` below judge it; that is the setting to use when your
-    # boards label a lot of postings with nothing more than "Remote".
+    # What to do with a location that names a real place you have not
+    # accepted: "reject" (the default) drops it before it reaches the AI
+    # scorer, "pass" sends it to the scorer as well. "reject" is the right
+    # default because remote and unlabelled locations never land here - only
+    # an actual unaccepted country does.
+    #
+    # Locations that say nothing about a country do not reach this setting.
+    # An empty location, a remote phrasing in any wording ("remote",
+    # "worldwide", "anywhere", "home office", "work from home",
+    # "ortsunabhängig", ...), and filler values like "N/A" all go to the AI
+    # scorer, which judges them against `ai.profile` and `ai.instructions`.
+    # That is deliberate: the set of phrasings a portal might use for
+    # "anywhere" is not enumerable, and the pre-filter must not guess.
     unmatched: reject
 
   # 0-1 relevance score threshold (from the AI scorer) required to trigger
@@ -140,6 +142,12 @@ ai:
   # Free-text description of what you're looking for. Sent verbatim to the
   # model alongside each candidate job — edit this any time to change what
   # counts as a match, no code changes required.
+  #
+  # This is the precision lever, and the place to say which of the
+  # `filter.keywords` titles you actually want most. The scorer's prompt
+  # already discounts generic matches, so "platform engineering roles
+  # primarily, SRE for extra coverage" belongs here rather than in a ranked
+  # keyword list.
   profile: |
     Backend / platform engineer looking for Go-focused roles: services and
     APIs, distributed systems, and Kubernetes-adjacent infrastructure work.
@@ -149,8 +157,9 @@ ai:
 
   # Optional extra rules for the scorer, appended to the fixed scoring
   # prompt. Use this for hard constraints that would clutter the profile -
-  # above all legal-location ones, which the pre-filter above cannot judge
-  # on its own (a posting has to say something the lists recognize first).
+  # above all legal-location ones. The pre-filter above only decides whether a
+  # posting names an accepted country; where a remote posting may legally be
+  # based is a judgment call, and this is where you make it.
   #
   # This text is TRUSTED OPERATOR TEXT. It is added to the system prompt
   # rather than to the untrusted, fenced-off posting, so anything pasted here

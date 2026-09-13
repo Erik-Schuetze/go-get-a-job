@@ -478,15 +478,17 @@ func TestRunner_Run_CapsUntrustedLogAttributeLength(t *testing.T) {
 
 // --- location pre-filter diagnostics -----------------------------------
 
-// The location pre-filter used to drop postings silently. That is how a
-// Canada-based posting got through unnoticed: nothing in the log said which
-// rule, if any, had been applied. These tests pin the diagnostic down.
-func TestRunner_Run_DeniesDeniedLocationAndReportsWhy(t *testing.T) {
-	denied := model.Job{
+// The location pre-filter used to drop postings silently, and used to be the
+// only thing standing between a Canada-based posting and the notifier because
+// the accept list was inert. These tests pin the new behaviour down: naming a
+// place the accept list does not cover is dropped and reported, while
+// anything that is not tied to a country reaches the scorer.
+func TestRunner_Run_DropsUnlistedLocationAndReportsWhy(t *testing.T) {
+	unlisted := model.Job{
 		ID:       "job-ca",
 		Title:    "Platform Engineer",
 		Company:  "Acme",
-		Location: "Remote - Canada",
+		Location: "Toronto, Canada",
 	}
 
 	handler := &recordingHandler{}
@@ -496,13 +498,12 @@ func TestRunner_Run_DeniesDeniedLocationAndReportsWhy(t *testing.T) {
 
 	filterCfg := baseFilterConfig()
 	filterCfg.Locations = config.LocationConfig{
-		Allow:     []string{"Germany", "EMEA"},
-		Deny:      []string{"Canada"},
+		Accept:    []string{"Germany", "EMEA"},
 		Unmatched: config.LocationUnmatchedReject,
 	}
 
 	r := &Runner{
-		Sources:  []sources.Source{&fakeSource{name: "fake", jobs: []model.Job{denied}}},
+		Sources:  []sources.Source{&fakeSource{name: "fake", jobs: []model.Job{unlisted}}},
 		Filter:   filterCfg,
 		Profile:  "profile",
 		Scorer:   scorer,
@@ -520,13 +521,16 @@ func TestRunner_Run_DeniesDeniedLocationAndReportsWhy(t *testing.T) {
 		t.Fatalf("expected one recorded rejection, got %d", len(summary.LocationRejections))
 	}
 	rej := summary.LocationRejections[0]
-	if rej.Rule != "Canada" || rej.Kind != filter.LocationKindDeny {
-		t.Errorf("expected rule=Canada kind=deny, got rule=%q kind=%q", rej.Rule, rej.Kind)
+	if rej.Kind != filter.LocationKindUnmatched {
+		t.Errorf("expected kind=%q, got kind=%q", filter.LocationKindUnmatched, rej.Kind)
+	}
+	if rej.Rule != "" {
+		t.Errorf("expected no deciding rule for an unlisted place, got rule=%q", rej.Rule)
 	}
 
 	// A location rejection must not cost an AI call.
 	if len(scorer.calls) != 0 {
-		t.Errorf("expected no AI calls for a denied location, got %v", scorer.calls)
+		t.Errorf("expected no AI calls for an unlisted location, got %v", scorer.calls)
 	}
 	if len(notifier.notified) != 0 {
 		t.Errorf("expected no notification, got %d", len(notifier.notified))
@@ -539,31 +543,64 @@ func TestRunner_Run_DeniesDeniedLocationAndReportsWhy(t *testing.T) {
 	}
 
 	attrs := handler.stringAttrs()
-	if got := attrs["location rejected.location"]; got != "Remote - Canada" {
+	if got := attrs["location rejected.location"]; got != "Toronto, Canada" {
 		t.Errorf("expected the debug log to carry the location, got %q", got)
 	}
-	if got := attrs["location rejected.rule"]; got != "Canada" {
-		t.Errorf("expected the debug log to name the deciding rule, got %q", got)
+	if got := attrs["location rejected.kind"]; got != filter.LocationKindUnmatched {
+		t.Errorf("expected the debug log to name the decision kind, got %q", got)
 	}
 }
 
-func TestRunner_Run_ReportsUnmatchedLocationSeparatelyFromDeny(t *testing.T) {
-	// "Remote" alone matches neither list. Under the default it is dropped,
-	// but for a different reason than a deny - and the run summary has to
-	// distinguish them, because the fixes are opposite (add an allow entry
-	// versus relax a deny entry).
-	job := model.Job{ID: "job-remote", Title: "Platform Engineer", Location: "Remote"}
+func TestRunner_Run_RemoteLocationInAForeignCountryReachesTheScorer(t *testing.T) {
+	// The regression test for the reported leak, inverted. "Remote - Canada"
+	// used to be caught only because Canada was enumerated in a deny list.
+	// Without one it reaches the AI scorer, which holds the relocation rule,
+	// and gets dropped there instead of by a list that has to name every
+	// country in the world.
+	job := model.Job{ID: "job-ca-remote", Title: "Platform Engineer", Location: "Remote - Canada"}
 
 	scorer := newFakeScorer()
 	filterCfg := baseFilterConfig()
 	filterCfg.Locations = config.LocationConfig{
-		Allow:     []string{"Germany"},
-		Deny:      []string{"Canada"},
+		Accept:    []string{"Germany", "EMEA"},
 		Unmatched: config.LocationUnmatchedReject,
 	}
 
 	r := &Runner{
 		Sources:  []sources.Source{&fakeSource{name: "fake", jobs: []model.Job{job}}},
+		Filter:   filterCfg,
+		Profile:  "profile",
+		Scorer:   scorer,
+		Store:    newFakeStore(),
+		Notifier: &fakeNotifier{},
+	}
+
+	summary := r.Run(context.Background())
+
+	if summary.FilteredByLocation != 0 {
+		t.Errorf("expected the location pre-filter to let a remote posting through, got %d", summary.FilteredByLocation)
+	}
+	if len(scorer.calls) != 1 {
+		t.Errorf("expected exactly one AI call, got %v", scorer.calls)
+	}
+}
+
+func TestRunner_Run_ReportedKindDistinguishesUnlistedPlaceFromRemote(t *testing.T) {
+	// A run that drops a lot of postings has to say which of the two
+	// happened: a place that is simply not accepted (widen the accept list
+	// if that is wrong) or a posting the pre-filter declined to judge at all
+	// (it never should be dropped). Only a place is ever dropped.
+	unlisted := model.Job{ID: "job-ca", Title: "Platform Engineer", Location: "Toronto, Canada"}
+
+	scorer := newFakeScorer()
+	filterCfg := baseFilterConfig()
+	filterCfg.Locations = config.LocationConfig{
+		Accept:    []string{"Germany"},
+		Unmatched: config.LocationUnmatchedReject,
+	}
+
+	r := &Runner{
+		Sources:  []sources.Source{&fakeSource{name: "fake", jobs: []model.Job{unlisted}}},
 		Filter:   filterCfg,
 		Profile:  "profile",
 		Scorer:   scorer,
@@ -580,22 +617,22 @@ func TestRunner_Run_ReportsUnmatchedLocationSeparatelyFromDeny(t *testing.T) {
 		t.Errorf("expected kind=%q, got %q", filter.LocationKindUnmatched, got)
 	}
 	if got := summary.LocationRejections[0].Rule; got != "" {
-		t.Errorf("expected no deciding rule for an unmatched location, got %q", got)
+		t.Errorf("expected no deciding rule for an unlisted location, got %q", got)
 	}
 }
 
 func TestRunner_Run_UnmatchedPassReachesTheScorer(t *testing.T) {
-	// The opt-in escape hatch: an ambiguous location is handed to the AI,
-	// which is where the profile's legal-location rules can judge it.
-	job := model.Job{ID: "job-remote", Title: "Platform Engineer", Location: "Remote"}
+	// The opt-in escape hatch: a posting in a country that is not accepted
+	// is handed to the AI, which is where the profile's legal-location rules
+	// can judge it.
+	job := model.Job{ID: "job-ca", Title: "Platform Engineer", Location: "Toronto, Canada"}
 
 	scorer := newFakeScorer()
-	scorer.scores["job-remote"] = filter.AIScore{Score: 0.9, Reason: "good fit"}
+	scorer.scores["job-ca"] = filter.AIScore{Score: 0.9, Reason: "good fit"}
 
 	filterCfg := baseFilterConfig()
 	filterCfg.Locations = config.LocationConfig{
-		Allow:     []string{"Germany"},
-		Deny:      []string{"Canada"},
+		Accept:    []string{"Germany"},
 		Unmatched: config.LocationUnmatchedPass,
 	}
 
@@ -624,7 +661,7 @@ func TestRunner_Run_UnmatchedPassReachesTheScorer(t *testing.T) {
 }
 
 func TestRunner_Run_CapsReportedLocationRejections(t *testing.T) {
-	// A misconfigured allow list can reject hundreds of postings in one run.
+	// A misconfigured accept list can reject hundreds of postings in one run.
 	// The count is unbounded, but the retained sample must not be.
 	jobs := make([]model.Job, 0, 50)
 	for i := range 50 {
@@ -637,8 +674,7 @@ func TestRunner_Run_CapsReportedLocationRejections(t *testing.T) {
 
 	filterCfg := baseFilterConfig()
 	filterCfg.Locations = config.LocationConfig{
-		Allow:     []string{"Germany"},
-		Deny:      []string{"Canada"},
+		Accept:    []string{"Germany"},
 		Unmatched: config.LocationUnmatchedReject,
 	}
 
