@@ -257,3 +257,53 @@ func TestNotify_PropagatesTransportError(t *testing.T) {
 		t.Fatal("expected a transport error")
 	}
 }
+
+// TestNotifyWarning_IsDistinguishableFromAJobMatch pins the one property the
+// whole warning exists for: at a glance, from the notification list alone, the
+// operator must be able to tell "a board went quiet" from "here is a job worth
+// applying to". The title is the only field a phone is guaranteed to show, so
+// the marker has to be in it - a tag or priority can be dropped by a client or
+// hidden behind an expand.
+func TestNotifyWarning_IsDistinguishableFromAJobMatch(t *testing.T) {
+	warningServer, warningCaptured := captureServer(t, http.StatusOK, "")
+	n := NewNtfy(warningServer.URL, "job-matches", "")
+	n.HTTPClient = warningServer.Client()
+
+	if err := n.NotifyWarning(context.Background(), "2 source(s) with no postings", "greenhouse/dead"); err != nil {
+		t.Fatalf("NotifyWarning returned error: %v", err)
+	}
+
+	matchServer, matchCaptured := captureServer(t, http.StatusOK, "")
+	m := NewNtfy(matchServer.URL, "job-matches", "")
+	m.HTTPClient = matchServer.Client()
+	if err := m.Notify(context.Background(), model.Job{Title: "Platform Engineer", Company: "Acme"}, "great fit"); err != nil {
+		t.Fatalf("Notify returned error: %v", err)
+	}
+
+	warnTitle := warningCaptured.headers.Get("Title")
+	if !strings.Contains(warnTitle, "warning") {
+		t.Errorf("warning Title = %q, want it to contain %q", warnTitle, "warning")
+	}
+	if warnTitle == matchCaptured.headers.Get("Title") {
+		t.Fatalf("warning and match titles are identical (%q)", warnTitle)
+	}
+	if got := warningCaptured.headers.Get("Tags"); !strings.Contains(got, "warning") {
+		t.Errorf("Tags = %q, want it to contain %q", got, "warning")
+	}
+
+	// The body carries third-party text (source labels come from config, but
+	// the same path will carry anything the guard adds later), so the same
+	// control-character stripping as every other notification must apply.
+	if err := n.NotifyWarning(context.Background(), "title\x1b]0;pwned\x07", strings.Repeat("x", 5000)); err != nil {
+		t.Fatalf("NotifyWarning returned error: %v", err)
+	}
+	if strings.ContainsAny(warningCaptured.body, "\x1b\x07") {
+		t.Errorf("expected control characters to be stripped from the body, got %q", warningCaptured.body)
+	}
+	if got := len([]rune(warningCaptured.body)); got > maxBodyChars+3 {
+		t.Errorf("body is %d runes, want at most %d (+3 for the truncation marker)", got, maxBodyChars)
+	}
+	if got := len([]rune(warningCaptured.headers.Get("Title"))); got > maxTitleChars {
+		t.Errorf("Title is %d runes, want at most %d", got, maxTitleChars)
+	}
+}

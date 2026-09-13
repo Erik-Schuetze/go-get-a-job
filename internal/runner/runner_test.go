@@ -21,12 +21,23 @@ import (
 // --- fakes -----------------------------------------------------------
 
 type fakeSource struct {
-	name string
-	jobs []model.Job
-	err  error
+	name  string
+	label string
+	jobs  []model.Job
+	err   error
 }
 
 func (f *fakeSource) Name() string { return f.name }
+
+// Label defaults to the name so simple tests that use one fake per name keep
+// working; tests that exercise per-source state set it explicitly.
+func (f *fakeSource) Label() string {
+	if f.label != "" {
+		return f.label
+	}
+	return f.name
+}
+
 func (f *fakeSource) Fetch(_ context.Context) ([]model.Job, error) {
 	if f.err != nil {
 		return nil, f.err
@@ -59,12 +70,14 @@ func (f *fakeScorer) Score(_ context.Context, job model.Job, _ string) (filter.A
 }
 
 type fakeStore struct {
-	mu      sync.Mutex
-	records map[string]store.Record
+	mu        sync.Mutex
+	records   map[string]store.Record
+	health    map[string]store.SourceHealth
+	recordErr error
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{records: map[string]store.Record{}}
+	return &fakeStore{records: map[string]store.Record{}, health: map[string]store.SourceHealth{}}
 }
 
 func (f *fakeStore) Seen(_ context.Context, jobID string) (bool, error) {
@@ -96,11 +109,51 @@ func (f *fakeStore) MarkNotified(_ context.Context, jobID string, at time.Time) 
 
 func (f *fakeStore) Close() error { return nil }
 
+// recordErr, when set, makes RecordSourceFetch fail so the runner's
+// best-effort handling of a health-write failure can be tested.
+func (f *fakeStore) RecordSourceFetch(_ context.Context, source string, jobCount int, at time.Time) (store.SourceHealth, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.recordErr != nil {
+		return store.SourceHealth{}, f.recordErr
+	}
+	prev := f.health[source]
+	next := prev
+	if jobCount == 0 {
+		next.ConsecutiveZeroRuns++
+	} else {
+		next.ConsecutiveZeroRuns = 0
+	}
+	next.Source = source
+	next.PreviousZeroRuns = prev.ConsecutiveZeroRuns
+	next.LastJobCount = jobCount
+	next.LastFetchAt = at
+	if jobCount > 0 {
+		next.LastNonEmptyAt = at
+	}
+	f.health[source] = next
+	return next, nil
+}
+
+func (f *fakeStore) SourceHealth(_ context.Context, source string) (store.SourceHealth, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	h, ok := f.health[source]
+	return h, ok, nil
+}
+
 type fakeNotifier struct {
 	mu       sync.Mutex
 	notified []model.Job
 	errIDs   map[string]error
 	failed   int
+	warnings []fakeWarning
+}
+
+// fakeWarning captures one NotifyWarning call.
+type fakeWarning struct {
+	Title string
+	Body  string
 }
 
 func newFakeNotifier() *fakeNotifier {
@@ -121,6 +174,13 @@ func (f *fakeNotifier) NotifyFailure(_ context.Context, _ error) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.failed++
+	return nil
+}
+
+func (f *fakeNotifier) NotifyWarning(_ context.Context, title, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.warnings = append(f.warnings, fakeWarning{Title: title, Body: body})
 	return nil
 }
 

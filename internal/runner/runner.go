@@ -29,6 +29,10 @@ type Runner struct {
 	Scorer   filter.Scorer
 	Store    store.Store
 	Notifier notify.Notifier
+	// Guard tunes the outbound-request limits and the dead-source detector.
+	// The zero value disables the dead-source detector (see GuardConfig);
+	// request limits are applied by sources.ConfigureClient, not here.
+	Guard config.GuardConfig
 
 	// Logger defaults to slog.Default() if nil.
 	Logger *slog.Logger
@@ -56,6 +60,12 @@ type Summary struct {
 	// end-of-run summary. Bounded so a misconfigured accept list cannot turn
 	// the log into a wall of text.
 	LocationRejections []LocationRejection
+
+	// SilentSources lists sources that crossed the dead-source threshold on
+	// this run (or are due a repeat reminder). A run with matches *and*
+	// entries here is normal and expected: one board going quiet says
+	// nothing about the others.
+	SilentSources []SilentSource
 }
 
 // LocationRejection describes one posting dropped by the location
@@ -88,6 +98,13 @@ func (r *Runner) Run(ctx context.Context) Summary {
 	var summary Summary
 	logger := r.logger()
 	now := r.now()
+	runAt := now()
+
+	// One entry per source that fetched successfully. Sources that errored
+	// are deliberately absent: a failed fetch is not a source that returned
+	// zero postings, and conflating the two would let a flaky network push
+	// a healthy board towards a false "gone quiet" alert.
+	fetches := make([]sourceFetch, 0, len(r.Sources))
 
 	for _, src := range r.Sources {
 		jobs, err := src.Fetch(ctx)
@@ -97,9 +114,10 @@ func (r *Runner) Run(ctx context.Context) Summary {
 			continue
 		}
 		summary.Fetched += len(jobs)
+		fetches = append(fetches, sourceFetch{label: src.Label(), count: len(jobs)})
 
 		for _, job := range jobs {
-			res, err := r.processJob(ctx, job, now())
+			res, err := r.processJob(ctx, job, runAt)
 			if err != nil {
 				// The ID and title come from the ATS response. Structured
 				// logs are the one place where a newline from a hostile
@@ -125,6 +143,11 @@ func (r *Runner) Run(ctx context.Context) Summary {
 		}
 	}
 
+	// Recorded before the summary line so the log reports the health guard's
+	// verdict in the same record as the counts it is easy to compare it
+	// against.
+	summary.SilentSources = r.recordSourceHealth(ctx, logger, fetches, runAt)
+
 	logger.Info("run complete",
 		"fetched", summary.Fetched,
 		"new", summary.New,
@@ -132,6 +155,7 @@ func (r *Runner) Run(ctx context.Context) Summary {
 		"filtered_by_location", summary.FilteredByLocation,
 		"source_errors", len(summary.SourceErrors),
 		"process_errors", len(summary.ProcessErrors),
+		"silent_sources", len(summary.SilentSources),
 	)
 
 	if len(summary.LocationRejections) > 0 {
@@ -141,6 +165,9 @@ func (r *Runner) Run(ctx context.Context) Summary {
 			"sample", summary.LocationRejections,
 		)
 	}
+
+	r.notifySilentSources(ctx, logger, summary.SilentSources)
+
 	return summary
 }
 

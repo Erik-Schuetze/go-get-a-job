@@ -188,3 +188,44 @@ notify:
 store:
   type: sqlite
   path: /data/go-get-a-job.db
+
+# Limits and failure alerts. Everything here is optional: omit the whole block,
+# or any key in it, and the defaults below apply.
+guard:
+  # How many consecutive successful runs a source may return zero postings
+  # before you get a warning, and how often that warning repeats while the
+  # source stays silent. Default: 14.
+  #
+  # This is a "the board is broken" detector, not a "this company is not
+  # hiring" detector - and from a response those look identical. A company with
+  # three open roles legitimately has none for weeks, so a short threshold
+  # would fire constantly and teach you to ignore the one alert that matters.
+  #
+  # The failures it catches: a board slug that was renamed or moved to another
+  # ATS, an API that changed shape, a company that stopped publishing where it
+  # used to. SmartRecruiters is the sharp case - it answers *any* slug with
+  # "200, no postings", so a typo there is otherwise perfectly silent.
+  #
+  # A source that returns postings resets the count, and a source that errors
+  # is never counted here (that is reported as an error instead).
+  #
+  # To turn the warning off, set this high enough that it never fires (e.g.
+  # 3650). A negative value is rejected rather than silently ignored.
+  deadSourceRuns: 14
+
+  # Floor between two outbound requests, in whole milliseconds. Default: 250.
+  # Global, not per host.
+  #
+  # Raise this if you watch a lot of boards and want to be gentler; the
+  # requests go to other people's infrastructure, published for browsers
+  # rather than for a polling client. Lowering it makes the tool worse, not
+  # faster: a full run of 40 boards is already a few thousand requests.
+  minRequestIntervalMs: 250
+
+  # Hard cap on outbound requests in one run. Default: 10000.
+  #
+  # This catches a pagination loop rather than enforcing a rate - reaching it
+  # means a bug, not a busy day. It is also the budget for the whole process,
+  # shared across every source, so a config with 50 companies does not get 50
+  # times the intended ceiling.
+  maxRequestsPerRun: 10000

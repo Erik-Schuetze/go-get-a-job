@@ -19,4 +19,17 @@ type Notifier interface {
 	// NotifyFailure delivers a best-effort alert that a run failed
 	// unexpectedly, so a broken watcher doesn't silently go quiet forever.
 	NotifyFailure(ctx context.Context, runErr error) error
+
+	// NotifyWarning delivers a best-effort alert about something that needs
+	// the operator's attention even though the run itself succeeded - most
+	// importantly a source that has stopped returning postings.
+	//
+	// It is separate from NotifyFailure because the two call for different
+	// reactions: a failed run is loud and self-evident, while a source that
+	// returns zero postings looks like a quiet week. A warning's whole job
+	// is to make that distinction visible, which is why an implementation
+	// must mark it as a warning in the notification title - titles are what
+	// a phone shows first, and a warning that reads like a job match is a
+	// warning the operator will open expecting to apply to something.
+	NotifyWarning(ctx context.Context, title, body string) error
 }

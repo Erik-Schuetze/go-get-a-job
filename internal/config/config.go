@@ -24,6 +24,55 @@ type Config struct {
 	AI      AIConfig       `yaml:"ai"`
 	Notify  NotifyConfig   `yaml:"notify"`
 	Store   StoreConfig    `yaml:"store"`
+	Guard   GuardConfig    `yaml:"guard"`
+}
+
+// GuardConfig tunes the two things that protect the operator from a silent
+// failure: the outbound request budget, and the alert that fires when a
+// source stops returning postings.
+//
+// Both exist because the failure this project is built to prevent is
+// silence. A source that returns nothing - because its board was retired,
+// its API changed, or its slug was mistyped - looks exactly like a quiet
+// week, and the operator cannot tell the difference by reading a
+// notification feed that is simply empty.
+type GuardConfig struct {
+	// DeadSourceRuns is how many consecutive successful runs a source may
+	// return zero postings before a warning is sent, and how often that
+	// warning repeats while the source stays silent. Defaults to 14.
+	//
+	// The default is deliberately long. This is a "the board is broken"
+	// detector, not a "this company isn't hiring" detector, and those two
+	// are indistinguishable from the response alone: a boutique
+	// infrastructure company with three open roles legitimately has none for
+	// weeks at a time, and a warning that fires whenever that happens is one
+	// the operator learns to ignore - which is worse than no warning, since
+	// it also buries the case that matters. Two weeks of a board answering
+	// successfully with an empty list is long enough that "retired slug" or
+	// "changed API" is the more likely explanation.
+	//
+	// To turn the guard off, set it high enough that it never fires. 0 (and
+	// any negative value) is rejected rather than redefined, so that
+	// "unset" and "off" can never be confused for each other.
+	DeadSourceRuns int `yaml:"deadSourceRuns"`
+
+	// MinRequestIntervalMs is the floor between outbound requests,
+	// measured from the start of one to the start of the next. It is global
+	// rather than per host. Defaults to 250.
+	//
+	// This is a politeness setting, and lowering it makes the tool worse,
+	// not better: the hosts being polled are other people's infrastructure,
+	// published for browsers rather than for a polling client, and a wide
+	// per-posting fan-out is what a large board turns into. The reason it is
+	// configurable at all is the opposite direction - raising it.
+	// It is expressed in whole milliseconds because the config file is plain
+	// YAML, where a bare "250ms" is ambiguous.
+	MinRequestIntervalMs int `yaml:"minRequestIntervalMs"`
+
+	// MaxRequestsPerRun caps the outbound requests one run may make.
+	// Defaults to 10000. It catches a pagination loop rather than enforcing
+	// a rate; reaching it means a bug, not a busy day.
+	MaxRequestsPerRun int `yaml:"maxRequestsPerRun"`
 }
 
 // SourceConfig describes one company/board to watch. Which fields are
@@ -279,12 +328,28 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// Defaults for GuardConfig, mirrored in config.example.yaml.
+const (
+	DefaultDeadSourceRuns       = 14
+	DefaultMinRequestIntervalMs = 250
+	DefaultMaxRequestsPerRun    = 10_000
+)
+
 func (c *Config) applyDefaults() {
 	if c.Filter.MinAIScore == 0 {
 		c.Filter.MinAIScore = 0.7
 	}
 	if c.Filter.Locations.Unmatched == "" {
 		c.Filter.Locations.Unmatched = LocationUnmatchedReject
+	}
+	if c.Guard.DeadSourceRuns == 0 {
+		c.Guard.DeadSourceRuns = DefaultDeadSourceRuns
+	}
+	if c.Guard.MinRequestIntervalMs == 0 {
+		c.Guard.MinRequestIntervalMs = DefaultMinRequestIntervalMs
+	}
+	if c.Guard.MaxRequestsPerRun == 0 {
+		c.Guard.MaxRequestsPerRun = DefaultMaxRequestsPerRun
 	}
 	if c.AI.Provider == "" {
 		c.AI.Provider = "deepseek"
@@ -471,6 +536,22 @@ func (c *Config) Validate() error {
 		}
 	default:
 		return fmt.Errorf("store.type: unknown or unsupported type %q", c.Store.Type)
+	}
+
+	// Every guard value is a limit on how hard this program may hit other
+	// people's servers or on how noisily it may alert. Zero means "unset"
+	// (applyDefaults has already replaced it by the time a config is in
+	// use); a negative value can only be a typo, and silently treating it as
+	// a very large budget is exactly the kind of quiet misreading this whole
+	// guard exists to prevent.
+	if c.Guard.DeadSourceRuns < 0 {
+		return fmt.Errorf("guard.deadSourceRuns must not be negative, got %d", c.Guard.DeadSourceRuns)
+	}
+	if c.Guard.MinRequestIntervalMs < 0 {
+		return fmt.Errorf("guard.minRequestIntervalMs must not be negative, got %d", c.Guard.MinRequestIntervalMs)
+	}
+	if c.Guard.MaxRequestsPerRun < 0 {
+		return fmt.Errorf("guard.maxRequestsPerRun must not be negative, got %d", c.Guard.MaxRequestsPerRun)
 	}
 
 	return nil

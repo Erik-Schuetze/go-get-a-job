@@ -55,6 +55,8 @@ func NewSmartRecruiters(company, displayName string) *SmartRecruiters {
 
 func (s *SmartRecruiters) Name() string { return "smartrecruiters" }
 
+func (s *SmartRecruiters) Label() string { return "smartrecruiters/" + s.Company }
+
 type smartRecruitersListResponse struct {
 	TotalFound int                       `json:"totalFound"`
 	Content    []smartRecruitersListItem `json:"content"`

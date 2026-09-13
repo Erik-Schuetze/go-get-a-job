@@ -40,6 +40,8 @@ func NewAshby(company, displayName string) *Ashby {
 
 func (a *Ashby) Name() string { return "ashby" }
 
+func (a *Ashby) Label() string { return "ashby/" + a.Company }
+
 type ashbyResponse struct {
 	Jobs []ashbyJob `json:"jobs"`
 }

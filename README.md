@@ -43,6 +43,11 @@ description of what you're looking for — not just keyword matching.
 5. **Notify** (`internal/notify`, ntfy) pushes a notification for anything
    scoring above your threshold.
 
+Each source's fetch also feeds a per-source health record, so a board that
+returns nothing for long enough produces one `ntfy` warning rather than silence
+(see `guard` under "Tuning relevance"). The run exits non-zero if any source
+errored, so a scheduler sees a partial failure too.
+
 Everything is config/interface-driven: adding a company is a config-only
 change for Greenhouse/Lever/Ashby/SmartRecruiters/Workday sources, the AI
 "profile" is free text you can edit any time, and the notifier is a small
@@ -83,12 +88,13 @@ make build       # builds ./bin/go-get-a-job
 make run         # builds, then runs against config/config.example.yaml
 ```
 
-Two flags:
+Three flags:
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `-config` | `config.yaml` | Path to the YAML config. |
 | `-log-level` | `info` | `debug`, `info`, `warn`, or `error`. `debug` adds one line per filtered-out posting, including the entry that decided it. |
+| `-validate` | `false` | Fetch every configured source once, report per-source health, and exit non-zero if any looks unhealthy. No AI calls, no database writes, no notifications. See "Verifying a board before you add it". |
 
 The whole pipeline is covered by unit tests using fakes/`httptest` servers
 (no real network calls in `go test ./...`), and every source connector was
@@ -331,11 +337,31 @@ sources:
 
 ### Verifying a board before you add it
 
-A wrong or retired board token does **not** fail the run: the connector logs
+A wrong or retired board token does **not** stop the run: the connector logs
 one `ERROR source fetch failed` line, the other sources still produce
-matches, and the process still exits 0. So a misconfigured company can sit
-in your config for months producing nothing. Check the URL yourself first -
-one `curl` per company is enough:
+matches, and - since this release - the process exits `1` so a scheduler can
+see that something went wrong. A misconfigured company can still sit in your
+config for months producing nothing that you would notice, though, so check a
+board before trusting it.
+
+The quickest way is the binary itself, which is the only check that exercises
+the exact connectors you will run:
+
+```sh
+make build
+./bin/go-get-a-job -config myconfig.yaml -validate
+```
+
+It fetches every source in config order, one line each, and prints
+`unhealthy: fetch failed` / `unhealthy: board returned no postings` /
+`unhealthy: postings are missing required fields`. It makes the same requests
+a real run would (paced by the shared client, so it cannot arrive as a burst),
+and sends no notifications and no AI calls, so it costs nothing but the
+requests. A **non-empty board that legitimately has no open roles** is
+reported as unhealthy too - it cannot tell that case apart from a wrong slug,
+which is exactly the ambiguity it is meant to surface.
+
+To check one board by hand instead, one `curl` per company is enough:
 
 ```sh
 # Greenhouse (200 = ok, 404 = board retired/renamed)
@@ -475,6 +501,54 @@ Two things to know:
   output contract cannot be overridden from here.
 - **It costs tokens on every call.** It is capped (4000 characters) and the
   config fails to load if you exceed it.
+
+#### `guard` - noticing a board that has gone quiet
+
+```yaml
+guard:
+  deadSourceRuns: 14        # consecutive empty runs before a warning
+  minRequestIntervalMs: 250 # floor between outbound requests
+  maxRequestsPerRun: 10000  # hard ceiling on requests in one run
+```
+
+The problem this solves is not "a company is not hiring". It is a board that
+is *broken*: a slug renamed or migrated to another ATS, an API that changed
+shape, a company that moved hiring behind a login. Several providers answer a
+nonexistent board with `200` and an empty list, which is byte-for-byte what a
+company with nothing open returns - so the run reports success and you learn
+nothing. `deadSourceRuns` is the only signal available for that case: every
+source that returns postings has its counter reset, every source that returns
+nothing has it incremented, and crossing the threshold sends one `ntfy`
+warning naming the source.
+
+Watch out for the deliberate choices baked in here:
+
+- **Only successful fetches are counted.** A source that *errors* is not
+  recorded at all - it is already reported as a source error. Counting it
+  would let one flaky network day push a healthy board toward a false alarm,
+  and a warning that fires on false alarms is one you stop reading.
+- **14 is high on purpose.** From a response alone, "the board is broken" and
+  "the company has nothing open" are indistinguishable. A boutique
+  infrastructure company with three roles legitimately has none for weeks, and
+  a warning that fires during those weeks buries the case that matters. Daily
+  runs mean a real board failure is reported within about two weeks.
+- **The warning repeats every `deadSourceRuns` runs while the source stays
+  silent** - not just once. A one-shot reminder gets swiped away and the
+  source then never speaks again; a warning on *every* run trains you to
+  ignore it. `0` is rejected rather than treated as "off", so unset and
+  disabled can never be confused: to disable it, set a value it will never
+  reach, e.g. `3650`.
+- **A failure to record health is logged, never fatal.** The guard must not
+  cost you the matches the run actually found.
+- **Detection is per source, not per connector type.** `guard` and the
+  warning messages use the source's `Label()` (e.g. `greenhouse/grafanalabs`),
+  because six Greenhouse boards are six sources sharing one connector name and
+  one shared history would let five healthy boards hide a sixth.
+- **`minRequestIntervalMs` and `maxRequestsPerRun` are the same limits
+  described under "Request etiquette"**, moved from compile-time constants
+  into config. The interval is global rather than per source: a per-source
+  budget would give a 50-company config 50× the intended ceiling, which is the
+  opposite of pacing.
 
 ## Security
 

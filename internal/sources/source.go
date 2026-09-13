@@ -31,15 +31,57 @@ type Source interface {
 	// tag each returned Job's Source field and in logs.
 	Name() string
 
+	// Label identifies this *configured* source uniquely among all
+	// configured sources: the connector type plus the board it points at,
+	// e.g. "greenhouse/grafanalabs". Name() is not enough for anything that
+	// has to remember state per source - a config watching six Greenhouse
+	// boards has six sources and one Name(), so their histories would
+	// otherwise be merged into one and five healthy boards would mask a
+	// sixth that had gone silent.
+	Label() string
+
 	// Fetch returns all currently open postings for this source.
 	Fetch(ctx context.Context) ([]model.Job, error)
+}
+
+// Shared outbound client state. One client is shared by every connector so
+// that pacing and the request budget are properties of the process rather
+// than of one board: a per-connector budget would mean a config with
+// fifty sources gets fifty times the intended ceiling, which is precisely
+// the runaway this is meant to prevent.
+var (
+	sharedClientOnce  sync.Once
+	sharedClient      *http.Client
+	sharedMinInterval = httpclient.DefaultMinInterval
+	sharedMaxRequests = httpclient.DefaultMaxRequests
+)
+
+// ConfigureClient sets the pacing floor and request budget for the shared
+// outbound client. It must be called before any source is built (i.e. once at
+// startup, before BuildAll); afterwards it has no effect, because the client
+// is created lazily on first use.
+//
+// Both values are limits on how hard this program may hit other people's
+// servers, so an operator must be able to lower them from config even though
+// the built-in defaults are already conservative. Zero or negative values
+// mean "keep the default".
+func ConfigureClient(minInterval time.Duration, maxRequests int) {
+	if minInterval > 0 {
+		sharedMinInterval = minInterval
+	}
+	if maxRequests > 0 {
+		sharedMaxRequests = maxRequests
+	}
 }
 
 func defaultHTTPClient() *http.Client {
 	// Every connector gets the same client: identified, paced, and with a
 	// bounded request budget. See internal/httpclient for why each of those
 	// is not optional when the hosts being fetched are other people's.
-	return httpclient.New(httpclient.DefaultMinInterval, httpclient.DefaultMaxRequests)
+	sharedClientOnce.Do(func() {
+		sharedClient = httpclient.New(sharedMinInterval, sharedMaxRequests)
+	})
+	return sharedClient
 }
 
 // buildURL joins a request URL out of a trusted base and untrusted path
