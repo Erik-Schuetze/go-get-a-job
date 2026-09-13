@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -214,7 +215,7 @@ func (s *SQLiteStore) RecordSourceFetch(ctx context.Context, source string, jobC
 		`SELECT consecutive_zero_runs, last_non_empty_at FROM source_health WHERE source = ?`, source).
 		Scan(&prev, &prevNonEmpty)
 	switch {
-	case err == sql.ErrNoRows:
+	case errors.Is(err, sql.ErrNoRows):
 		prev = 0
 		prevNonEmpty = sql.NullString{}
 	case err != nil:
