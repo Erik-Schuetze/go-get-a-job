@@ -9,6 +9,58 @@ is the public API that version numbers speak to.
 
 ## [Unreleased]
 
+### Breaking
+
+- **`filter.locations.deny` is removed and `filter.locations.allow` is renamed
+  to `filter.locations.accept`.** `accept` is now a whitelist of the places you
+  can legally work from, and a place you cannot work from no longer needs
+  listing:
+
+  ```yaml
+  filter:
+    locations:
+      accept:
+        - Germany
+        - EMEA
+        - European Union
+      unmatched: reject
+  ```
+
+  Both old keys fail at startup with an error naming the replacement, rather
+  than being silently ignored. Why: with `unmatched: pass`, which the previous
+  documented example used, `allow` could not change the outcome of a single
+  posting - only `deny` filtered - so every country that should have been
+  excluded had to be enumerated by hand.
+
+### Changed
+
+- **Remote and unlabelled locations always reach the AI scorer.** An empty
+  location, a remote phrasing (`remote`, `worldwide`, `anywhere`, `home
+  office`, `work from home`, `ortsunabhängig`, ...), and a filler value like
+  `N/A` are all handed to the scorer, and `unmatched` no longer applies to
+  them. They are matched as whole words against a built-in list instead of
+  having to be enumerated in config, because the phrasings a portal might use
+  for "anywhere" are not a closed set and the pre-filter must not guess. A
+  posting located `"Remote - Canada"` therefore reaches the scorer, where the
+  profile's relocation rules judge it, instead of needing a `deny` entry.
+- **`filter.locations.unmatched` now means "names a place that is not
+  accepted"** - a foreign onsite posting - rather than "matched no list". Its
+  default remains `reject`.
+- **`filter.keywords` is documented as a recall gate rather than a ranking.**
+  Listing adjacent titles (`sre`, `devops`) widens the net without lowering the
+  bar, because how much a posting is wanted is expressed in `ai.profile`. No
+  schema or matching change.
+
+### Added
+
+- **A built-in ambiguous-location list**, so a location that is remote or
+  says nothing about a country reaches the scorer in any phrasing, with the
+  deciding marker recorded as the filter's `Rule` in the debug log and the
+  end-of-run sample.
+- **`config/config.example.yaml` and `deploy/configmap.example.yaml`** document
+  the new `accept` shape and the recall-versus-precision split between
+  `filter.keywords` and `ai.profile`.
+
 ## [0.2.0] - 2026-09-12
 
 The theme of this release is that the wrong jobs got through, and that the

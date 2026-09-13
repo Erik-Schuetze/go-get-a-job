@@ -88,7 +88,7 @@ Two flags:
 | Flag | Default | Meaning |
 |---|---|---|
 | `-config` | `config.yaml` | Path to the YAML config. |
-| `-log-level` | `info` | `debug`, `info`, `warn`, or `error`. `debug` adds one line per filtered-out posting, including the location entry that decided it. |
+| `-log-level` | `info` | `debug`, `info`, `warn`, or `error`. `debug` adds one line per filtered-out posting, including the entry that decided it. |
 
 The whole pipeline is covered by unit tests using fakes/`httptest` servers
 (no real network calls in `go test ./...`), and every source connector was
@@ -292,7 +292,7 @@ same thing wrapped in a ConfigMap. Edit your own copy - no code changes or
 rebuilds needed, just re-apply the ConfigMap.
 
 A real config is not neutral: the `ai.profile` text reads like a short CV, and
-`filter.locations` names the countries you can and cannot work from. Keep it in
+`filter.locations` names the countries you can work from. Keep it in
 a repository you control rather than a public one or a fork of one. Whatever
 manages it, the ConfigMap is semi-trusted at run time - see [ConfigMap edits can
 steal your secrets](#configmap-edits-can-steal-your-secrets).
@@ -383,63 +383,79 @@ re-add them:
 
 ### Tuning relevance
 
-- `filter.keywords`: cheap pre-filter. A posting's title+description must match
-  at least one entry, case-insensitively, before it is ever sent to the AI
-  scorer. Leave it empty (`[]`) to disable it.
-- `filter.locations`: where you are willing to work - see below.
+Two knobs, with a clear division of labour: `filter` decides what is worth
+asking about, `ai.profile` decides how much you want it.
+
+- `filter.keywords`: the **recall** gate. A posting's title+description must
+  match at least one entry, case-insensitively, before it is ever sent to the
+  AI scorer. Keep it broad and list every adjacent title you would consider
+  (`platform engineer`, `sre`, `devops`) - it exists to skip obviously
+  irrelevant postings cheaply, not to rank them. Leave it empty (`[]`) to
+  disable it.
+- `filter.locations`: the **legal** gate - where you can actually work. A
+  whitelist, not an allow/deny pair; see below.
 - `filter.minAIScore`: 0-1 threshold for a notification to fire.
-- `ai.profile`: free text describing what you're looking for - this is
-  what the model actually judges postings against, so this is the main
-  lever for changing what counts as a match.
+- `ai.profile`: the **precision** lever. Free text describing what you're
+  looking for, and what the model actually judges postings against. This is
+  where you say which of your keywords you want most ("platform engineering
+  primarily, SRE for extra coverage"); the scoring prompt already discounts
+  generic matches, so there is no ranked-keyword syntax to learn.
 - `ai.instructions`: optional hard rules appended to the scoring prompt - see
   below.
 
-#### `filter.locations` - allow, deny, unmatched
+#### `filter.locations` - accept, unmatched
+
+A whitelist of the places you can legally work from. Naming one is what sends a
+posting to the AI scorer; a posting that names any other place is dropped before
+it costs an AI call. There is no `deny` list, so nothing needs updating when you
+see a posting from a country you forgot to enumerate.
 
 Matching is case-insensitive and **word-boundary aware**, and entries are
 phrases. That means `US` matches `Austin, US` but not `Australia`, `Belarus`, or
-`Prussia`, and `Remote (Global)` is a single entry rather than two words
+`Prussia`, and `European Union` is a single entry rather than three words
 matching independently.
 
 ```yaml
 filter:
   locations:
-    allow:
+    accept:
       - Germany
       - EMEA
       - European Union
-      - "Remote (Global)"
-      - Worldwide
-    deny:
-      - United States
-      - Canada
     unmatched: reject
 ```
 
-- **`deny` always wins.** A posting matching any `deny` entry is rejected even
-  when it also matches `allow`. This is what stops the classic leak: with
-  `allow: [Remote]` and no deny list, a posting located
-  `"Remote - Canada"` matches the substring `Remote` and reaches the scorer,
-  which is exactly the wrong answer for someone who cannot work from Canada.
-- **`unmatched`** decides what happens when a location matches *neither* list,
-  which in practice means a bare `"Remote"` that says nothing about where you
-  may legally be based. The default, `reject`, drops it. `pass` hands it to the
-  AI scorer instead, at the cost of one AI call per posting - use it when your
-  boards label a lot of postings with nothing more than `"Remote"`.
-- Leave `allow` empty (`[]`) to skip the allow half of the check entirely;
-  `deny` still applies.
+- **`accept`** is country and region names only. A posting located
+  `"Berlin, Germany (Remote)"` matches `Germany`, so remote roles that name a
+  place you can work from need no special entry.
+- **`unmatched`** decides what happens to a location that names a real place you
+  have not accepted: `reject` (the default) drops it, `pass` sends it to the AI
+  scorer too. `reject` is safe as a default because remote postings never land
+  here.
+- Leave `accept` empty (`[]`) to skip location filtering entirely.
 
-There is deliberately **no special handling of the word "remote"**. A posting
-located `"Remote - Canada"` is treated exactly like one located
-`"Toronto, Canada"`, because that is what it is. List the remote phrasings that
-genuinely mean *anywhere* - `Remote (Global)`, `Worldwide` - in `allow`, and put
-the places you cannot work in `deny`.
+Anything that says nothing about *which* country you would be in goes to the AI
+scorer regardless of this setting: an empty location, a filler value like `N/A`,
+and any remote phrasing - `Remote`, `Fully remote`, `Anywhere`, `Worldwide`,
+`Home office`, `Work from home`, `Ortsunabhängig`. That is deliberate. The set
+of phrasings a portal might use for "anywhere" is not enumerable, and a
+pre-filter that guesses wrong silently drops the global remote roles you most
+want. So the pre-filter only ever rules on places it can read, and the
+relocation rules in `ai.instructions` below do the rest.
+
+The cost is that a posting located `"Remote - Canada"` reaches the scorer, which
+is one AI call spent where a hardcoded denial would have been free. With
+`minAIScore` at its default that posting is scored low and not notified.
+
+Dropped-location diagnostics appear at the end of each run and, per posting,
+under `--log-level debug`, so you can see *why* something was filtered rather
+than guessing.
 
 #### `ai.instructions` - hard rules the pre-filter can't express
 
 A free-text block appended to the scorer's **system** prompt, after the fixed
 scoring contract. Use it for constraints that are a matter of judgment rather
-than a string the location lists can recognize:
+than a place the whitelist can recognize:
 
 ```yaml
 ai:
@@ -459,10 +475,6 @@ Two things to know:
   output contract cannot be overridden from here.
 - **It costs tokens on every call.** It is capped (4000 characters) and the
   config fails to load if you exceed it.
-
-Dropped-location diagnostics appear at the end of each run and, per posting,
-under `--log-level debug`, so you can see *why* something was filtered rather
-than guessing.
 
 ## Security
 
@@ -724,7 +736,8 @@ because the config is the thing you write and the thing that can break.
 
 **The 0.x caveat applies right now.** While the major version is `0`, breaking
 changes are released as MINOR bumps rather than MAJOR ones - so the
-`filter.locations` reshape in `v0.2.0` is a MINOR bump, not a MAJOR one. The
+`filter.locations` whitelist rework in `v0.3.0` is a MINOR bump, not a MAJOR
+one. The
 config API is promoted to `v1.0.0` only as an explicit stability commitment,
 not as a side effect of a feature landing.
 

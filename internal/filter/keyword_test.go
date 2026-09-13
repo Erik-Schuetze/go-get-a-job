@@ -41,12 +41,10 @@ func TestLocationMatch(t *testing.T) {
 		cfg  config.LocationConfig
 		want bool
 	}{
-		{"empty allow list always matches", config.LocationConfig{}, true},
-		{"matches case-insensitively", config.LocationConfig{Allow: []string{"GERMANY"}}, true},
-		{"matches remote", config.LocationConfig{Allow: []string{"remote"}}, true},
-		{"no match rejects by default", config.LocationConfig{Allow: []string{"France", "Spain"}}, false},
-		{"unmatched pass lets it through", config.LocationConfig{Allow: []string{"France"}, Unmatched: config.LocationUnmatchedPass}, true},
-		{"deny beats allow", config.LocationConfig{Allow: []string{"Germany"}, Deny: []string{"Germany"}}, false},
+		{"empty accept list always matches", config.LocationConfig{}, true},
+		{"matches case-insensitively", config.LocationConfig{Accept: []string{"GERMANY"}}, true},
+		{"a remote signal always matches", config.LocationConfig{Accept: []string{"France"}}, true},
+		{"unmatched pass lets it through", config.LocationConfig{Accept: []string{"France"}, Unmatched: config.LocationUnmatchedPass}, true},
 	}
 
 	for _, tt := range tests {
@@ -56,24 +54,34 @@ func TestLocationMatch(t *testing.T) {
 			}
 		})
 	}
+
+	// A location that names a country the list does not accept, with no
+	// remote signal to make it ambiguous, is what the unmatched mode is for.
+	onsite := model.Job{Location: "Toronto, Canada"}
+	if MatchLocation(onsite, config.LocationConfig{Accept: []string{"Germany"}}).Passed {
+		t.Error("expected an unlisted onsite location to be rejected by default")
+	}
+	if !MatchLocation(onsite, config.LocationConfig{Accept: []string{"Germany"}, Unmatched: config.LocationUnmatchedPass}).Passed {
+		t.Error("expected unmatched: pass to send an unlisted onsite location to the scorer")
+	}
 }
 
 func TestPasses(t *testing.T) {
 	job := model.Job{
 		Title:       "Platform Engineer",
 		Description: "Crossplane and Terraform all day.",
-		Location:    "Remote, Germany",
+		Location:    "Berlin, Germany",
 	}
 
 	cfg := config.FilterConfig{
 		Keywords:  []string{"crossplane"},
-		Locations: config.LocationConfig{Allow: []string{"Germany"}},
+		Locations: config.LocationConfig{Accept: []string{"Germany"}},
 	}
 	if !Passes(job, cfg) {
 		t.Error("expected job to pass both keyword and location filters")
 	}
 
-	cfg.Locations = config.LocationConfig{Allow: []string{"France"}}
+	cfg.Locations = config.LocationConfig{Accept: []string{"Canada"}}
 	if Passes(job, cfg) {
 		t.Error("expected job to fail location filter")
 	}

@@ -40,7 +40,9 @@ data:
         displayName: "GitLab"
 
     filter:
-      # Cheap pre-filter, applied before any AI call. Keep it broad.
+      # Recall gate, applied before any AI call. Keep it broad: list every
+      # adjacent title you would consider, not just the ideal one - which one
+      # you want most is said in `ai.profile` below.
       keywords:
         - "go developer"
         - "golang"
@@ -51,23 +53,18 @@ data:
         - "grpc"
         - "api"
       locations:
-        # Word-boundary phrase matching, case-insensitive. An empty `allow`
-        # list skips the allow half of the check entirely.
-        allow:
+        # Whitelist of places you can legally work from. Matching is
+        # word-boundary phrase matching, case-insensitive. An empty `accept`
+        # list skips location filtering entirely.
+        accept:
           - "Germany"
           - "EMEA"
           - "European Union"
-          - "Remote (Global)"
-          - "Worldwide"
-        # Rejected outright, whatever else the posting says. `deny` always
-        # wins over `allow` - this is what stops "Remote - Canada" from
-        # riding in on a bare "Remote" allow entry.
-        deny:
-          - "United States"
-          - "Canada"
-        # What to do when the location matches neither list, typically a
-        # bare "Remote". "reject" (the default) drops it; "pass" hands it to
-        # the AI scorer instead, at the cost of one extra AI call.
+        # What to do with a location naming a place you have not accepted:
+        # "reject" (the default) drops it before it reaches the AI scorer,
+        # "pass" sends it to the scorer too. Remote and unlabelled locations
+        # never reach this setting - they always go to the scorer, which is
+        # where the legal-location rules in `ai.instructions` apply.
         unmatched: reject
       minAIScore: 0.7
 
