@@ -60,6 +60,17 @@ is the public API that version numbers speak to.
 - **`config/config.example.yaml` and `deploy/configmap.example.yaml`** document
   the new `accept` shape and the recall-versus-precision split between
   `filter.keywords` and `ai.profile`.
+- **A shared outbound HTTP client that identifies the tool and paces itself**
+  (`internal/httpclient`). Every connector now sends
+  `User-Agent: go-get-a-job (+https://github.com/Erik-Schuetze/go-get-a-job)`,
+  keeps at least 250ms between requests (globally, so a concurrent per-posting
+  fan-out is serialized rather than able to arrive as a burst), obeys a `429`
+  or `503` by waiting out its `Retry-After` (capped at 30s) for up to two
+  retries, and refuses to exceed 10,000 requests in a run. These hosts are
+  other people's infrastructure, published for browsers rather than for a
+  polling client; the pacing is what keeps a wide fan-out on a large board from
+  being indistinguishable from a small flood. See "Request etiquette" in the
+  README.
 
 ## [0.2.0] - 2026-09-12
 

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Erik-Schuetze/go-get-a-job/internal/httpclient"
 	"github.com/Erik-Schuetze/go-get-a-job/internal/model"
 )
 
@@ -35,7 +36,10 @@ type Source interface {
 }
 
 func defaultHTTPClient() *http.Client {
-	return &http.Client{Timeout: 30 * time.Second}
+	// Every connector gets the same client: identified, paced, and with a
+	// bounded request budget. See internal/httpclient for why each of those
+	// is not optional when the hosts being fetched are other people's.
+	return httpclient.New(httpclient.DefaultMinInterval, httpclient.DefaultMaxRequests)
 }
 
 // buildURL joins a request URL out of a trusted base and untrusted path

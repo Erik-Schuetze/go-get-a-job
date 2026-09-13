@@ -720,6 +720,47 @@ Deliberately left out of this hardening pass, so they aren't lost:
   dropping the public route entirely - removes a whole class of risk at
   essentially no cost to this app.
 
+## Request etiquette
+
+Every endpoint this tool reads belongs to someone else: the public job-board
+APIs of companies you have no relationship with, and occasionally their
+careers pages. Those endpoints are published for browsers, not for a polling
+client, so the tool is a guest and behaves like one. These rules are
+implemented once, in `internal/httpclient`, and every connector uses that
+client - so they cannot be forgotten by a new connector added later:
+
+- **It identifies itself.** Requests carry
+  `User-Agent: go-get-a-job (+https://github.com/Erik-Schuetze/go-get-a-job)`.
+  An operator who doesn't want to be polled can block it by name, or look up
+  what is doing it, instead of having to guess. The value is a constant, not a
+  config field, specifically so it can't be set to a browser's - pretending to
+  be a browser is the behaviour that makes automated clients unwelcome.
+- **It paces itself.** At most one outbound request every 250ms, counted
+  globally rather than per host, so a run cannot arrive as a burst no matter
+  how many boards it touches or how many goroutines a connector fans out with.
+  The connector fan-out is real - a Workday or SmartRecruiters board needs one
+  detail request per posting - and without a floor on the interval that fan-out
+  is indistinguishable from a small flood.
+- **It obeys a throttle instead of repeating it.** A `429` or `503` is retried
+  up to twice, waiting as long as the response's `Retry-After` asked (capped at
+  30s, so a daily run never stalls on an hour-long backoff). A `5xx` that
+  isn't `503` is not retried: that usually means the request was wrong, and
+  repeating it is noise rather than patience.
+- **It cannot run away.** A run is capped at 10,000 outbound requests. That is
+  not a rate limit but a bug-catcher: a pagination loop is the one failure mode
+  that turns a polite client into a hostile one without anyone editing
+  anything, and it should fail loudly instead of hammering.
+
+Scraping an HTML careers page is not a problem in itself - some employers
+publish jobs only that way - as long as it goes through this client, so a
+scrape inherits the same identity, pacing, and backoff as an API call. What's
+off the table is a client that fans out wide and fast enough to be mistaken for
+an attack, which is what the pacing above exists to prevent.
+
+One consequence worth knowing: pacing means a very large board takes a while.
+At 250ms per request, a 200-posting Workday board needs roughly a minute. That
+is the intended trade - this runs once a day, and being slow is cheap.
+
 ## Versioning and releases
 
 This project follows [semver](https://semver.org), with one adaptation: **the
