@@ -143,7 +143,7 @@ mutable by definition, so nothing that runs unattended may reference them.)
 digest**, e.g.:
 
 ```yaml
-image: ghcr.io/erik-schuetze/go-get-a-job:v0.5.1@sha256:1030e831...
+image: ghcr.io/erik-schuetze/go-get-a-job:v0.5.1@sha256:1030e83176ea1194ef44ff36b8b50da19e0405b17929f03a682b63e349ff6201
 imagePullPolicy: IfNotPresent
 ```
 
