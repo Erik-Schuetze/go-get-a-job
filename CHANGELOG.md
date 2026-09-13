@@ -1,3 +1,69 @@
+## [0.5.1] - 2026-09-13
+
+A bug-fix release for the one defect the first real batch exposed: a posting
+advertised in more than one place was announced as whichever place the board
+happened to list first, which is sometimes the one place that rules it out.
+
+### Fixed
+
+- **A multi-location posting is announced as a place you can work from, not as
+  the board's first.** `locationHint` cut the location at the first `;` and
+  showed only that segment, on the documented assumption that "the first segment
+  is the one the board leads with, so it is both the most representative and the
+  shortest". Canonical falsifies it. Its board stores `Home Based - Americas;
+  Home based - EMEA` and leads with the **Americas** entry, so the notification
+  read:
+
+  ```
+  💼 Canonical: Software Engineer - Python/Golang - Kubernetes · Home Based - Americas
+  ```
+
+  only to show `Home based - EMEA` when the posting was opened - a false
+  negative manufactured in the one place it cannot be corrected from context.
+  The rest of the pipeline was right: the location whitelist passed the string
+  because `EMEA` is accepted, and the scorer kept `locationOk` true, since a
+  posting only fails that when *every* listed location rules you out.
+
+  The fix stops guessing in the notify layer. `LocationDecision.Rule`
+  (`internal/filter/location.go`) already records which `accept` entry selected
+  the posting, and it now reaches the notification as
+  `notify.Match.LocationRule`, which picks the segment naming that entry. Two
+  details are deliberate:
+
+  - **Only an `accept` entry is forwarded.** `Rule` is also set for the
+    ambiguous markers that hand a posting to the scorer (`remote`, `worldwide`,
+    `n a`), and those are the *opposite* of a place. Forwarding one would have
+    the notifier hunt for a segment containing the word "remote" - which, on a
+    remote posting, is every segment, so the first would win by accident and the
+    fix would silently do nothing.
+  - **A miss falls back to the first segment.** The rule is located by a
+    case-insensitive substring test, which is looser than the filter's
+    word-boundary match and free to miss: by the time this runs, the filter has
+    already decided the entry applies to the whole string, and the only question
+    left is which part of it carries the entry. When the rule is absent or gone
+    from the string, the previous behaviour stands, because there is nothing
+    better to go on.
+
+  Measured against the 3,792 stored postings: **108 of the 448 multi-location
+  postings render differently, and every one of them is an improvement** - the
+  two delivered Canonical notifications above, 20 more Canonical postings
+  leading with `Home Based - APAC` or `Americas` instead of their EMEA entry,
+  JetBrains postings leading with `Amsterdam, Netherlands` or `Belgrade,
+  Serbia` instead of the `Berlin, Germany` entry that made them matches, and
+  Datadog, Chainguard and GitLab postings leading with a third country instead
+  of `Germany`. No posting renders worse, which follows from the segment now
+  being chosen by the entry that made it acceptable.
+
+  This changes nothing about *what* matches, only how it is read: no posting is
+  newly included, excluded, re-scored or re-notified.
+
+- **`deploy/cronjob.yaml` and the README no longer disagree about which release
+  an image digest belongs to.** The manifest pinned `0.1.0` with its real digest
+  while the README's "move to a new release" snippet paired `v0.2.0` with that
+  same digest, so following the documentation literally would have pinned one
+  release's tag to another release's image. Both now name the same release and
+  the same digest, and the README says where each value comes from.
+
 ## [0.5.0] - 2026-09-13
 
 The notification is the only part of this program anyone actually reads, and it
@@ -326,7 +392,8 @@ Both are fixed.
   were accepted and notified about under the old rules are not re-scored or
   withdrawn.
 
-[Unreleased]: https://github.com/Erik-Schuetze/go-get-a-job/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Erik-Schuetze/go-get-a-job/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/Erik-Schuetze/go-get-a-job/releases/tag/v0.5.1
 [0.5.0]: https://github.com/Erik-Schuetze/go-get-a-job/releases/tag/v0.5.0
 [0.4.0]: https://github.com/Erik-Schuetze/go-get-a-job/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Erik-Schuetze/go-get-a-job/releases/tag/v0.3.0
