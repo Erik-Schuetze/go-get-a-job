@@ -813,3 +813,94 @@ func TestRunner_Run_HonoursTheLocationVeto(t *testing.T) {
 		t.Errorf("vetoed job was marked notified at %v", *rec.NotifiedAt)
 	}
 }
+
+// --- the location entry that reached the notifier -------------------------
+
+// The location pre-filter already knows which accept entry selected a posting,
+// and that fact only becomes useful if it survives as far as the notification:
+// the notifier needs it to pick the workable segment of a multi-location
+// posting rather than the board's first (see notify.locationHint). These tests
+// pin the hand-off, and pin the cases where the entry must NOT be forwarded.
+func TestRunner_Run_ForwardsTheMatchingLocationEntryToTheNotifier(t *testing.T) {
+	// Canonical's real shape: the first region rules the posting out for this
+	// operator, and the second is what makes it a match. Without the entry the
+	// notifier shows "Home Based - Americas" and the match is lost.
+	job := model.Job{
+		ID:       "job-canonical",
+		Title:    "Software Engineer - Python/Golang - Kubernetes",
+		Company:  "Canonical",
+		Location: "Home Based - Americas; Home based - EMEA",
+	}
+
+	scorer := newFakeScorer()
+	scorer.scores["job-canonical"] = filter.AIScore{Score: 0.72, Reason: "match"}
+	filterCfg := baseFilterConfig()
+	// Empty keywords, as in the real config: the location entry is what this
+	// test is about, and a title keyword would only add a second reason for
+	// the posting to be dropped.
+	filterCfg.Keywords = nil
+	filterCfg.Locations = config.LocationConfig{
+		Accept:    []string{"Germany", "EMEA"},
+		Unmatched: config.LocationUnmatchedReject,
+	}
+
+	notifier := newFakeNotifier()
+	r := &Runner{
+		Sources:  []sources.Source{&fakeSource{name: "fake", jobs: []model.Job{job}}},
+		Filter:   filterCfg,
+		Profile:  "profile",
+		Scorer:   scorer,
+		Store:    newFakeStore(),
+		Notifier: notifier,
+	}
+
+	r.Run(context.Background())
+
+	if len(notifier.matches) != 1 {
+		t.Fatalf("expected one notification, got %d", len(notifier.matches))
+	}
+	if got := notifier.matches[0].LocationRule; got != "EMEA" {
+		t.Errorf("LocationRule = %q, want %q", got, "EMEA")
+	}
+}
+
+func TestRunner_Run_DoesNotForwardAnAmbiguousMarkerAsALocationEntry(t *testing.T) {
+	// A remote marker is the phrasing that stopped the pre-filter from
+	// judging, not a place the operator may work from. Forwarding it would
+	// have the notifier hunt for a segment containing "remote" - which, on a
+	// remote posting, is every segment, so the first would win by accident and
+	// the fix would silently do nothing.
+	job := model.Job{
+		ID:       "job-remote-abroad",
+		Title:    "Platform Engineer",
+		Location: "Remote - Canada; Remote - Brazil",
+	}
+
+	scorer := newFakeScorer()
+	scorer.scores["job-remote-abroad"] = filter.AIScore{Score: 0.72, Reason: "match"}
+	filterCfg := baseFilterConfig()
+	filterCfg.Keywords = nil
+	filterCfg.Locations = config.LocationConfig{
+		Accept:    []string{"Germany"},
+		Unmatched: config.LocationUnmatchedReject,
+	}
+
+	notifier := newFakeNotifier()
+	r := &Runner{
+		Sources:  []sources.Source{&fakeSource{name: "fake", jobs: []model.Job{job}}},
+		Filter:   filterCfg,
+		Profile:  "profile",
+		Scorer:   scorer,
+		Store:    newFakeStore(),
+		Notifier: notifier,
+	}
+
+	r.Run(context.Background())
+
+	if len(notifier.matches) != 1 {
+		t.Fatalf("expected one notification, got %d", len(notifier.matches))
+	}
+	if got := notifier.matches[0].LocationRule; got != "" {
+		t.Errorf("LocationRule = %q, want empty for an ambiguous location", got)
+	}
+}

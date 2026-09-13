@@ -134,15 +134,16 @@ try things out; they assume you are in a clone of this repo.
 `.github/workflows/docker-build.yml` builds and publishes the image to
 `ghcr.io/erik-schuetze/go-get-a-job` automatically on every push to `main`
 (and on `v*` tags). Release image tags follow semver and mirror the git tag
-exactly, so tag `v0.2.0` publishes `v0.2.0` - the same string as the GitHub
+exactly, so tag `v0.5.1` publishes `v0.5.1` - the same string as the GitHub
 release and the same string you copy into the manifest. (`main` and a
 short-SHA tag are published alongside it for traceability, but both are
 mutable by definition, so nothing that runs unattended may reference them.)
 
-`deploy/cronjob.yaml` points at a **release tag plus a digest**, e.g.:
+`deploy/cronjob.yaml` points at a **release tag plus that same release's
+digest**, e.g.:
 
 ```yaml
-image: ghcr.io/erik-schuetze/go-get-a-job:v0.2.0@sha256:d1fff42c...
+image: ghcr.io/erik-schuetze/go-get-a-job:v0.5.1@sha256:1030e831...
 imagePullPolicy: IfNotPresent
 ```
 
@@ -152,14 +153,15 @@ That matters because the CronJob runs unattended - an unpinned `:latest`
 plus `imagePullPolicy: Always` means every run is a silent, unreviewed
 upgrade with no diff and no rollback artifact.
 
-To move to a new release, change the tag *and* the digest in
-`deploy/cronjob.yaml` in one reviewed commit; the previous digest is your
-rollback. Both values come from the same `docker buildx imagetools
-inspect` / `docker manifest inspect` output:
+To move to a new release, read both values from a single `docker buildx
+imagetools inspect` of the tag you are moving to, then change the tag *and*
+the digest in `deploy/cronjob.yaml` in one reviewed commit; the previous
+digest is your rollback. The tag is the one you passed in and the digest is
+the `Digest:` line it prints, so the two always agree:
 
 ```shell
-docker buildx imagetools inspect ghcr.io/erik-schuetze/go-get-a-job:v0.2.0
-# -> look for the top-level "Digest:" (the multi-arch manifest list)
+docker buildx imagetools inspect ghcr.io/erik-schuetze/go-get-a-job:v0.5.1
+# -> the "Digest:" line is the digest to pin
 ```
 
 > `v0.1.0` predates that convention and was published as `0.1.0`, so it is

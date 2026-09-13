@@ -181,6 +181,22 @@ func (r *Runner) Run(ctx context.Context) Summary {
 	return summary
 }
 
+// workableLocationRule returns the configured location entry that selected a
+// posting, or "" when no entry did.
+//
+// The distinction that matters is Kind, not Rule: an accept entry names a place
+// the operator may work from, while an ambiguous marker is only the phrasing
+// that stopped the pre-filter from judging ("remote", "n a", "distributed").
+// Those are the opposite of a place, and forwarding one would send the notifier
+// looking for a segment containing the word "remote" - which, on a remote
+// posting, is every segment of it.
+func workableLocationRule(decision filter.LocationDecision) string {
+	if decision.Kind != filter.LocationKindAccept {
+		return ""
+	}
+	return decision.Rule
+}
+
 // recordLocationRejection logs one location rejection at debug level and
 // keeps a bounded sample for the end-of-run summary. The rule and kind are
 // included because the useful question - "why did this Germany-based search
@@ -242,19 +258,25 @@ func (r *Runner) processJob(ctx context.Context, job model.Job, now time.Time) (
 
 	rec := store.Record{Job: job, FirstSeenAt: now}
 
-	// The location check is re-run separately when the combined pre-filter
-	// rejects, so a rejection can be attributed to the location rules
-	// rather than to the keyword list. Without that attribution, a
-	// too-narrow accept list is invisible in the logs.
+	// Resolved once, before the pre-filter, because two separate decisions
+	// need it and they must agree: the pre-filter consults the verdict, and
+	// the notification needs the entry that matched so it can show the
+	// segment of a multi-location posting that is actually workable rather
+	// than the board's first guess.
+	location := filter.MatchLocation(job, r.Filter.Locations)
+
+	// A rejection is attributed to the location rules rather than to the
+	// keyword list, because without that attribution a too-narrow accept
+	// list is invisible in the logs.
 	if !filter.Passes(job, r.Filter) {
 		if err := r.Store.Save(ctx, rec); err != nil {
 			return processResult{}, fmt.Errorf("saving filtered-out job: %w", err)
 		}
 
 		res := processResult{isNew: true}
-		if loc := filter.MatchLocation(job, r.Filter.Locations); !loc.Passed {
+		if !location.Passed {
 			res.locationRejected = true
-			res.location = loc
+			res.location = location
 		}
 		return res, nil
 	}
@@ -291,6 +313,11 @@ func (r *Runner) processJob(ctx context.Context, job model.Job, now time.Time) (
 		Score:   score.Score,
 		Reason:  score.Reason,
 		Signals: score.Signals,
+		// Only an accept entry names a place the operator may work from; an
+		// ambiguous marker ("remote") names the opposite of a place, and
+		// passing it on would have the notifier hunt for a segment holding
+		// the word "remote" - which is every segment of a remote posting.
+		LocationRule: workableLocationRule(location),
 	}); err != nil {
 		return processResult{}, fmt.Errorf("sending notification: %w", err)
 	}

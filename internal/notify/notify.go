@@ -32,6 +32,20 @@ type Match struct {
 	// Signals lists the specific terms that drove the score, for display
 	// alongside the reason. May be empty.
 	Signals []string
+
+	// LocationRule is the configured location entry that selected this
+	// posting, and is empty when no entry did - an ambiguous location handed
+	// to the scorer, an unmatched one the mode passed through, or location
+	// filtering switched off entirely.
+	//
+	// It exists because a posting may be listed against several places and
+	// the board's own order is no guide to which one applies. Canonical
+	// leads "Home Based - Americas; Home based - EMEA" with the region that
+	// rules the posting out for a reader in Germany, so showing the first
+	// segment hides the one that makes it a match - a false negative
+	// manufactured in the one place the operator cannot correct it from
+	// context.
+	LocationRule string
 }
 
 // Notifier delivers notifications about matched jobs and run failures.

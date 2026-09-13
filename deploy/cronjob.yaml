@@ -67,7 +67,7 @@ spec:
               # bump both values deliberately when cutting a release (see
               # README) - the old digest is the rollback. v0.1.0 is the one
               # release published before that convention, as "0.1.0".
-              image: ghcr.io/erik-schuetze/go-get-a-job:0.1.0@sha256:d1fff42c2a01492973234af251402b9e35399cfe48c723e0d3d1601a727b49af
+              image: ghcr.io/erik-schuetze/go-get-a-job:v0.5.1@sha256:1030e83176ea1194ef44ff36b8b50da19e0405b17929f03a682b63e349ff6201
               imagePullPolicy: IfNotPresent
               args: ["--config", "/etc/go-get-a-job/config.yaml"]
               envFrom:

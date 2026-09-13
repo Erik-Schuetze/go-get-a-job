@@ -123,7 +123,7 @@ func (n *Ntfy) Notify(ctx context.Context, match Match) error {
 	job := match.Job
 	tier := n.tierFor(match.Score)
 
-	title := n.title(job, tier.Emoji)
+	title := n.title(match, tier.Emoji)
 
 	headers := map[string]string{
 		"Title":    title,
@@ -155,13 +155,14 @@ func (n *Ntfy) Notify(ctx context.Context, match Match) error {
 // way for it to fail. The emoji has to be reserved for the same reason, and
 // less obviously: a two-rune prefix is enough to push the suffix off the end
 // of a title already sitting at the limit.
-func (n *Ntfy) title(job model.Job, emoji string) string {
+func (n *Ntfy) title(match Match, emoji string) string {
+	job := match.Job
 	prefix := sanitize.SingleLine(emoji, maxEmojiRunes)
 
 	company := sanitize.SingleLine(job.Company, maxTitleChars)
 	title := sanitize.SingleLine(job.Title, maxTitleChars)
 
-	suffix := locationHint(job.Location)
+	suffix := locationHint(job.Location, match.LocationRule)
 
 	// Everything that is not the company/title portion, including the
 	// truncation marker the name may have appended.
@@ -271,20 +272,50 @@ func postingAge(postedAt, now time.Time) string {
 //
 // Several boards list a posting against every place it may be filled in
 // ("Remote, Germany; Remote, United Kingdom"), and the full value overruns the
-// title. The first segment is the one the board leads with, so it is both the
-// most representative and the shortest.
-func locationHint(location string) string {
+// title. Which segment to show cannot be decided from the location string
+// alone, because a board's own order is no guide to relevance: Canonical leads
+// "Home Based - Americas; Home based - EMEA" with the region that rules the
+// posting out for a reader in Germany. matchedRule is the configured entry that
+// selected this posting, which turns the choice into a fact rather than a
+// guess. When it is empty or absent from the string, the first segment is used
+// as before - there is nothing better to go on.
+func locationHint(location, matchedRule string) string {
 	loc := sanitize.SingleLine(location, maxTitleChars)
 	if loc == "" {
 		return ""
 	}
-	if first, _, found := strings.Cut(loc, ";"); found {
+	if workable := workableSegment(loc, matchedRule); workable != "" {
+		loc = workable
+	} else if first, _, found := strings.Cut(loc, ";"); found {
 		loc = strings.TrimSpace(first)
 	}
 	if utf8.RuneCountInString(loc) <= maxLocationSuffixChars {
 		return loc
 	}
 	return strings.TrimSpace(sanitize.TruncateRunes(loc, maxLocationSuffixChars-1)) + "…"
+}
+
+// workableSegment returns the ";"-separated part of loc that names the entry
+// which selected the posting, or "" when that cannot be determined.
+//
+// The comparison is a plain case-insensitive substring, deliberately looser
+// than the filter's own word-boundary match: the filter has already decided
+// that this entry applies to the whole string, so the only question left is
+// which part of it carries the entry. A miss costs nothing, because "" falls
+// back to the previous behaviour of showing the first segment.
+func workableSegment(loc, matchedRule string) string {
+	rule := strings.TrimSpace(matchedRule)
+	if rule == "" || !strings.Contains(loc, ";") {
+		return ""
+	}
+	needle := strings.ToLower(rule)
+	for _, segment := range strings.Split(loc, ";") {
+		trimmed := strings.TrimSpace(segment)
+		if strings.Contains(strings.ToLower(trimmed), needle) {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 // companyTag builds the ntfy tag shown under a notification from a display
