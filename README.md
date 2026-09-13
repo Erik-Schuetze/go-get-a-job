@@ -2,11 +2,12 @@
 
 A small, self-hosted niche job watcher. It polls a curated list of
 companies' own Applicant Tracking Systems (Greenhouse, Lever, Ashby,
-SmartRecruiters, Workday) — not generic job boards — filters new postings
-with a cheap keyword pass plus an AI relevance score (DeepSeek, or any
-OpenAI-compatible provider), and pushes matches to your phone via
+SmartRecruiters, Personio, Recruitee, Teamtailor, Workable, Workday)
+rather than generic job boards, filters new postings with a cheap keyword
+pass plus an AI relevance score (DeepSeek, or any OpenAI-compatible
+provider), and pushes matches to your phone via
 [ntfy](https://ntfy.sh). It runs as a Kubernetes CronJob once a day (or
-whatever schedule you choose) and needs no frontend — everything is
+whatever schedule you choose) and needs no frontend: everything is
 configured through one YAML file.
 
 ## Why
@@ -16,7 +17,7 @@ roles centered on Infrastructure-as-Code) at specific companies you care
 about under a flood of irrelevant postings. go-get-a-job instead watches
 *exactly* the companies you tell it to, using each company's own public
 job-board API, and uses an AI model to judge fit against a free-text
-description of what you're looking for — not just keyword matching.
+description of what you're looking for, rather than matching keywords alone.
 
 ## How it works
 
@@ -29,9 +30,9 @@ description of what you're looking for — not just keyword matching.
 
 1. **Sources** (`internal/sources`) fetch every open posting from each
    configured company's ATS. Supported: Greenhouse, Lever, Ashby,
-   SmartRecruiters, and a generic Workday connector (Workday has no
-   official public API, but the request shape is the same for every
-   Workday customer).
+   SmartRecruiters, Personio, Recruitee, Teamtailor, Workable, and a
+   generic Workday connector (Workday has no official public API, but the
+   request shape is the same for every Workday customer).
 2. **Keyword filter** (`internal/filter`) cheaply skips obviously
    irrelevant postings (by title/description) before spending any AI
    budget on them.
@@ -51,7 +52,7 @@ returns nothing for long enough produces one `ntfy` warning rather than silence
 errored, so a scheduler sees a partial failure too.
 
 Everything is config/interface-driven: adding a company is a config-only
-change for Greenhouse/Lever/Ashby/SmartRecruiters/Workday sources, the AI
+change for any hosted job board, the AI
 "profile" is free text you can edit any time, and the notifier is a small
 interface so other channels could be added later without touching the
 pipeline.
@@ -60,18 +61,18 @@ pipeline.
 
 ```
 cmd/go-get-a-job/        entrypoint - one pass per invocation, then exits
-internal/config/      YAML schema, loading, validation
-internal/model/       shared Job type
-internal/sources/     one connector per ATS + registry
-internal/filter/      keyword pre-filter + AI relevance scorer
-internal/store/       SQLite-backed dedup store
-internal/notify/      notifier interface + ntfy implementation
-internal/runner/      orchestrates sources -> filter -> store -> notify
-internal/sanitize/    strips control characters from untrusted text
-internal/httpbody/    bounded reads of untrusted response bodies
-config/               example YAML config (config.example.yaml)
-deploy/               EXAMPLE Kubernetes manifests (no Kustomize/Helm)
-Dockerfile            multi-stage build -> distroless static image
+internal/config/         YAML schema, loading, validation
+internal/model/          shared Job type
+internal/sources/        one connector per ATS + registry
+internal/filter/         keyword pre-filter + AI relevance scorer
+internal/store/          SQLite-backed dedup store
+internal/notify/         notifier interface + ntfy implementation
+internal/runner/         orchestrates sources -> filter -> store -> notify
+internal/sanitize/       strips control characters from untrusted text
+internal/httpbody/       bounded reads of untrusted response bodies
+config/                  example YAML config (config.example.yaml)
+deploy/                  example Kubernetes manifests (no Kustomize/Helm)
+Dockerfile               multi-stage build -> distroless static image
 ```
 
 They are all examples: the config and the manifests describe a generic **Go
@@ -99,19 +100,16 @@ Three flags:
 | `-validate` | `false` | Fetch every configured source once, report per-source health, and exit non-zero if any looks unhealthy. No AI calls, no database writes, no notifications. See "Verifying a board before you add it". |
 
 The whole pipeline is covered by unit tests using fakes/`httptest` servers
-(no real network calls in `go test ./...`), and every source connector was
-additionally validated against the real live APIs during development. Note
-that boards are not forever - a company can retire its public board (see
-"Verifying a board before you add it"), which fails quietly unless you read
-the run's log line. Only
-`ai.baseURL` and `notify.ntfy.url` are configurable per-deployment; you can
-point them at local fake servers to smoke-test the full binary without
-spending real API credits - see the `Score`/`Notify` interfaces in
-`internal/filter` and `internal/notify` if you want to do the same.
+(no real network calls in `go test ./...`); every source connector was also
+checked against the real live API it targets.
 
-Before deploying, read [Security](#security) - it explains the reasoning
-behind the manifests in `deploy/`, and the parts that fail open unless you
-verify them.
+`ai.baseURL` and `notify.ntfy.url` are the only endpoints a deployment can
+point elsewhere, so you can aim them at local fake servers to smoke-test the
+full binary without spending real API credits - see the `Score`/`Notify`
+interfaces in `internal/filter` and `internal/notify`.
+
+Read [Security](#security) before you deploy: it lists the parts of `deploy/`
+that fail open unless you verify them.
 
 ## Deploying to Kubernetes
 
@@ -168,10 +166,9 @@ docker buildx imagetools inspect ghcr.io/erik-schuetze/go-get-a-job:v0.2.0
 > the one release whose image tag has no leading `v`. Every release from
 > `v0.2.0` on is `vX.Y.Z`.
 
-Nothing to do here at all unless you've forked this to your own GitHub
-account, in which case update the image reference in `deploy/cronjob.yaml`
-too - the workflow publishes to your own `ghcr.io/<you>/go-get-a-job`
-automatically once you push.
+If you forked this to your own GitHub account, update the image reference in
+`deploy/cronjob.yaml`: the workflow publishes to your own
+`ghcr.io/<you>/go-get-a-job` once you push.
 
 ### 2. Create the namespace, config, ntfy, and network policy
 
@@ -185,8 +182,7 @@ kubectl apply -f deploy/ntfy-pvc.yaml
 kubectl apply -f deploy/ntfy-deployment.yaml
 kubectl apply -f deploy/ntfy-service.yaml
 kubectl apply -f deploy/pvc.yaml
-# Last, once the workloads above are confirmed healthy (see the security
-# section for why the ordering matters):
+# Last, once the workloads above are confirmed healthy (see Security):
 kubectl apply -f deploy/networkpolicy.yaml
 ```
 
@@ -208,7 +204,8 @@ on the topic it actually publishes to:
 kubectl -n go-get-a-job exec deploy/ntfy -- env NTFY_PASSWORD='<choose-a-password>' \
   ntfy user add go-get-a-job-user
 
-# Grant access to the one topic the pipeline publishes to (default: job-matches).
+# Grant access to the one topic the pipeline publishes to (job-matches in the
+# example config).
 kubectl -n go-get-a-job exec deploy/ntfy -- ntfy access go-get-a-job-user job-matches rw
 
 kubectl -n go-get-a-job exec deploy/ntfy -- ntfy token add go-get-a-job-user
@@ -282,15 +279,15 @@ For push notifications away from your home network, route a hostname to that
 Service through whatever reverse-proxy + dynamic-DNS setup you already use for
 your other personal sites, update `base-url` in `deploy/ntfy-configmap.yaml`
 to match, then install the [ntfy app](https://ntfy.sh/#subscribe) and
-subscribe to your topic (`job-matches` by default) using the username/password
-from step 3.
+subscribe to your topic (`job-matches` in the example config) using the
+username/password from step 3.
 
-**Be aware that this makes the ntfy server internet-facing.** Its own
-`deny-all` auth is then the only thing between the open internet and your
-notification store, which is why step 3 creates a least-privilege user and why
-`deploy/ntfy-deployment.yaml` runs non-root on a pinned image. If your phone
-can reach the cluster over a VPN or your LAN, prefer that over a public
-hostname - nothing in this repo requires ntfy to be publicly reachable.
+A public hostname makes the ntfy server internet-facing, with its own
+`deny-all` auth as the only barrier between the open internet and your
+notification store. That is why step 3 creates a least-privilege user and
+why `deploy/ntfy-deployment.yaml` runs non-root on a pinned image. If your
+phone can reach the cluster over a VPN or your LAN, prefer that - nothing
+here requires ntfy to be publicly reachable.
 
 ## Configuring what it watches
 
@@ -375,10 +372,9 @@ sources:
 
 A wrong or retired board token does **not** stop the run: the connector logs
 one `ERROR source fetch failed` line, the other sources still produce
-matches, and - since this release - the process exits `1` so a scheduler can
-see that something went wrong. A misconfigured company can still sit in your
-config for months producing nothing that you would notice, though, so check a
-board before trusting it.
+matches, and the process exits `1` so a scheduler can see that something
+went wrong. A misconfigured company can still sit in your config for months
+producing nothing you would notice, so check a board before trusting it.
 
 The quickest way is the binary itself, which is the only check that exercises
 the exact connectors you will run:
@@ -440,8 +436,8 @@ curl -sS -o /dev/null -w '%{http_code}\n' -X POST \
   reads are off. No connector setting can work around this; skip the
   company.
 
-Two companies that look like they should work but do not, so you don't
-re-add them:
+Two companies that look like they should work but do not, so you don't add
+them:
 
 - **HashiCorp** - its Greenhouse board was retired (the old
   `boards.greenhouse.io/hashicorp` URL now redirects to a 404) around the
@@ -550,7 +546,7 @@ Two things to know:
 - **It costs tokens on every call.** It is capped (4000 characters) and the
   config fails to load if you exceed it.
 
-Note the wording above: rules about *where* a role is belong in `locationOk`,
+The wording above matters: rules about *where* a role is belong in `locationOk`,
 not in the score. Scoring and location are answered separately and the score is
 deliberately kept free of location, because a rule phrased as "score it 0.2 or
 below" mixes the two and there is then no way to tell "this is the wrong job"
@@ -615,7 +611,7 @@ notify:
   keeps working unchanged.
 
 The default boundaries are not round numbers chosen for looks: they were picked
-from the scores a real 47-company config actually produced, where 0.85 and 0.95
+from the scores a real run produced (46 notified matches), where 0.85 and 0.95
 fall in gaps between clusters. If your own list produces a different shape, that
 is exactly why this is config rather than code.
 
@@ -645,7 +641,7 @@ source that returns postings has its counter reset, every source that returns
 nothing has it incremented, and crossing the threshold sends one `ntfy`
 warning naming the source.
 
-Watch out for the deliberate choices baked in here:
+The deliberate choices here:
 
 - **Only successful fetches are counted.** A source that *errors* is not
   recorded at all - it is already reported as a source error. Counting it
@@ -669,18 +665,16 @@ Watch out for the deliberate choices baked in here:
   because six Greenhouse boards are six sources sharing one connector name and
   one shared history would let five healthy boards hide a sixth.
 - **`minRequestIntervalMs` and `maxRequestsPerRun` are the same limits
-  described under "Request etiquette"**, moved from compile-time constants
-  into config. The interval is global rather than per source: a per-source
-  budget would give a 50-company config 50× the intended ceiling, which is the
-  opposite of pacing.
+  described under "Request etiquette".** The interval is global rather than per
+  source: a per-source budget would give a 50-company config 50x the intended
+  ceiling, which is the opposite of pacing.
 
 ## Security
 
 This is a self-hosted watcher that runs unattended in a home cluster, talks to
 three kinds of untrusted third party, and holds two credentials. This section
-is the reasoning behind the hardening in `deploy/`, `internal/`, and `.github/`
-- written down because most of it is invisible from the manifests alone, and
-because the decisions here look arbitrary until you know what they're for.
+is the reasoning behind the hardening in `deploy/`, `internal/`, and `.github/`,
+most of which is invisible from the manifests alone.
 
 ### Threat model in one screen
 
@@ -701,11 +695,11 @@ because the decisions here look arbitrary until you know what they're for.
 | Your ConfigMap (GitOps-managed) | semi-trusted - see "ConfigMap edits" below |
 | Job postings from the ATS APIs (titles, descriptions, IDs, URLs) | **untrusted** - anyone can publish a job posting |
 | The AI provider's response (`score`, `reason`, `signals`) | **untrusted** |
-| Pod network | no longer assumed trusted - see the NetworkPolicy |
+| Pod network | **untrusted** - a default-deny NetworkPolicy scopes every pod's traffic |
 
-**Secrets never touch this repo.** `deploy/secret.example.yaml` was removed
-deliberately; the Secret is created with `kubectl create secret` (step 4) so no
-secret material is written to disk, committed to Git, or passed through any
+**Secrets never touch this repo.** The Secret is created with
+`kubectl create secret` (step 4) and mounted as env vars, so no secret
+material is written to disk, committed to Git, or passed through any
 tool. `internal/config` only ever logs an env-var *name*, never its value.
 
 ### ConfigMap edits can steal your secrets
@@ -738,7 +732,7 @@ single most realistic attack path against this deployment, and it is why:
   The practical rule: **anyone who can edit the ConfigMap can exfiltrate the
   secrets**, so treat the two permissions as equivalent when granting access.
 
-Note the AI provider is a third party: `ai.profile` (your own text) and the
+The AI provider is a third party: `ai.profile` (your own text) and the
 full job description are sent to it. That is a data-sharing decision, not a
 vulnerability - but if the postings you watch contain anything you'd rather
 not send to an external service, run without `ai:` configured (the keyword
@@ -793,10 +787,9 @@ validation above, not by the policy.
 ### Pod Security Admission
 
 `deploy/namespace.yaml` sets `pod-security.kubernetes.io/enforce: restricted`
-(plus `audit`/`warn`). Before that label existed the namespace had no policy at
-all, meaning the default `privileged` applied and a root container would have
-been admitted without comment - which is exactly what the bundled ntfy server
-used to be.
+(plus `audit`/`warn`). Without that label the namespace has no policy at all,
+so the default `privileged` applies and a container running as root with full
+capabilities would be admitted without comment.
 
 Both pods in the namespace satisfy `restricted`: non-root with an explicit
 UID/GID, all capabilities dropped, `allowPrivilegeEscalation: false`,
@@ -811,8 +804,9 @@ kubectl -n go-get-a-job run psa-probe --restart=Never --image=busybox:1.36 \
 ```
 
 **Apply order matters.** The PSA label must land *after* the hardened
-workloads are confirmed running, or it rejects the still-root pod and the
-namespace goes red on the next sync. If a future workload genuinely cannot meet
+workloads are confirmed running, or it rejects a workload that has not been
+hardened yet and the namespace goes red on the next sync. If a future workload
+genuinely cannot meet
 `restricted`, downgrade `enforce` to `baseline` and keep `warn`/`audit` on
 `restricted` - that surfaces the drift on every sync without blocking it. The
 label is a one-line revert.
@@ -837,8 +831,8 @@ internal hop encrypted too, serve ntfy with `listen-https` and point
 
 ### Untrusted input handling
 
-Defense in depth; none of these were exploitable bugs, and the reviews that
-preceded them found no injection, SSRF, or panic vectors.
+Defense in depth: these are boundaries, not fixes for known exploitable bugs -
+no injection, SSRF, or panic vector has been found in these paths.
 
 - **Response bodies are capped** (`internal/httpbody`) on every ATS call, the
   AI call, and ntfy error reads. Timeouts bound duration, not memory.
@@ -899,7 +893,7 @@ vulnerability reporting on this repository rather than a public issue.
 
 ### Known gaps / follow-ups
 
-Deliberately left out of this hardening pass, so they aren't lost:
+Deliberately not covered here, so they aren't lost:
 
 - **Image signing.** Digests are pinned, but nothing verifies *who* built the
   image. Cosign + an admission policy (Kyverno/Connaisseur) would close that;
@@ -973,12 +967,11 @@ because the config is the thing you write and the thing that can break.
 - **PATCH** - bug fixes, documentation, and dependency bumps with no behavior
   change.
 
-**The 0.x caveat applies right now.** While the major version is `0`, breaking
-changes are released as MINOR bumps rather than MAJOR ones - so the
-`filter.locations` whitelist rework in `v0.3.0` is a MINOR bump, not a MAJOR
-one. The
-config API is promoted to `v1.0.0` only as an explicit stability commitment,
-not as a side effect of a feature landing.
+**The 0.x caveat.** While the major version is `0`, breaking changes are
+released as MINOR bumps rather than MAJOR ones, so the `filter.locations`
+whitelist rework in `v0.3.0` is a MINOR bump, not a MAJOR one. The config API is
+promoted to `v1.0.0` only as an explicit stability commitment, not as a side
+effect of a feature landing.
 
 Conventions the releases follow:
 
@@ -1001,11 +994,12 @@ Conventions the releases follow:
 - **HashiCorp, Atlassian**: not a missing connector but unavailable data -
   HashiCorp's public Greenhouse board was retired (hiring now runs through
   IBM's careers site) and Atlassian's Workday tenant rejects anonymous API
-  reads with `401`. Both were in the default config and removed; see
-  "Verifying a board before you add it" for the details.
-- **Discovery mode**: finding companies you haven't explicitly listed
-  (e.g. via a self-hosted metasearch engine) was considered but is out of
-  scope for now - this project only watches companies you configure.
+  reads with `401`. Both are common asks, and
+  `config/config.example.yaml` says so where you would expect to find them;
+  see "Verifying a board before you add it" for the details.
+- **Discovery mode**: finding companies you haven't explicitly listed (e.g.
+  via a self-hosted metasearch engine). Out of scope: this project only
+  watches companies you configure.
 - **Frontend**: matches arrive via ntfy; there's no web UI. The SQLite
   store (`store.path`) can be inspected directly with any SQLite client if
   you want to see history.

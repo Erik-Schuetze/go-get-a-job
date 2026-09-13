@@ -140,7 +140,7 @@ func TestLoad_LocationsOldListFormFailsWithGuidance(t *testing.T) {
 }
 
 // TestLoad_LocationsRemovedKeysFailWithGuidance covers the v0.2.0 -> v0.3.0
-// upgrade path. Both keys used to change which postings were scored, so
+// upgrade path. Both keys changed which postings were scored, so
 // dropping either one silently would leave a run that looks healthy while
 // filtering on something the operator did not write.
 func TestLoad_LocationsRemovedKeysFailWithGuidance(t *testing.T) {

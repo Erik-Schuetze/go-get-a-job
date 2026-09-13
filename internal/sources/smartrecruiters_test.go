@@ -10,7 +10,7 @@ import (
 )
 
 // smartRecruitersListPage mirrors the real shape returned by
-// GET /v1/companies/{company}/postings (verified live during planning).
+// GET /v1/companies/{company}/postings (verified against the live API).
 func smartRecruitersListPage(offset, totalFound int, ids ...string) string {
 	var items []string
 	for _, id := range ids {
@@ -23,8 +23,7 @@ func smartRecruitersListPage(offset, totalFound int, ids ...string) string {
 }
 
 // smartRecruitersDetailFixture mirrors the real shape returned by
-// GET /v1/companies/{company}/postings/{id} (verified live during
-// planning).
+// GET /v1/companies/{company}/postings/{id} (verified against the live API).
 func smartRecruitersDetailFixture(id string) string {
 	return fmt.Sprintf(`{
 		"id": %q,

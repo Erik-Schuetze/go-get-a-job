@@ -31,7 +31,7 @@ const (
 // are only available from the per-posting detail endpoint
 // (GET .../postings/{id}), which this connector fetches for every listed
 // posting using a small bounded worker pool. Both endpoints are free and
-// unauthenticated (verified live during planning).
+// unauthenticated.
 type SmartRecruiters struct {
 	Company     string
 	DisplayName string

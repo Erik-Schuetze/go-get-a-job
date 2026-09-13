@@ -16,8 +16,9 @@
 # source of truth for your cluster.
 #
 # Nothing secret belongs in here either way: API keys and tokens are read
-# from environment variables populated from a Kubernetes Secret (see
-# secret.example.yaml), never from this file.
+# from environment variables populated from a Kubernetes Secret, which is
+# created with `kubectl create secret` and never committed (see the
+# Security section of the README).
 #
 # config/config.example.yaml is the same document with the full set of
 # explanatory comments; read that one to understand every key.
@@ -89,7 +90,7 @@ data:
       #  Treat "Remote - <country>" exactly like an onsite role in that
       #  country. A role that is remote globally, or workable from Germany,
       #  is fine. If a posting requires being legally based outside Germany
-      #  or requires relocation, score it 0.2 or below.
+      #  or requires relocation, set locationOk to false.
 
     notify:
       type: ntfy

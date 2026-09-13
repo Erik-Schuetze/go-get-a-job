@@ -5,7 +5,7 @@
 // board APIs of companies the operator has no relationship with, and their
 // careers pages. Those endpoints are free, unauthenticated, and documented
 // for browser use - not for a polling client - so the tool is a guest on
-// somebody else's infrastructure and has to behave like one. Two rules are
+// somebody else's infrastructure and has to behave like one. Three rules are
 // enforced here rather than left to each caller:
 //
 //  1. Every request identifies the tool. An operator who objects to being

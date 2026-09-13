@@ -40,9 +40,9 @@ spec:
         runAsNonRoot: true
         runAsUser: 65534
         runAsGroup: 65534
-        # Required for the ntfy-data PVC to be writable by the UID above: on
-        # first rollout the kubelet re-owns the volume's contents (previously
-        # written by the root-running pod) to this group.
+        # Required for the ntfy-data PVC to be writable by the UID above: the
+        # kubelet chowns the volume's contents to this group when it mounts
+        # them, including contents left behind by an earlier root-running pod.
         fsGroup: 65534
         seccompProfile:
           type: RuntimeDefault

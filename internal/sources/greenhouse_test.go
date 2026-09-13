@@ -9,7 +9,7 @@ import (
 
 // greenhouseFixture mirrors the real shape returned by
 // https://boards-api.greenhouse.io/v1/boards/{company}/jobs?content=true
-// (verified live against Grafana Labs' board during planning).
+// (verified against Grafana Labs' board).
 const greenhouseFixture = `{
   "jobs": [
     {

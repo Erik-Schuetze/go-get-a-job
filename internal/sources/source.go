@@ -90,11 +90,11 @@ func defaultHTTPClient() *http.Client {
 // Every connector interpolates a config-derived slug (a board token, tenant,
 // site, or company identifier) into a path, and two of them also interpolate
 // a value that came back from the previous API response. Concatenating those
-// with fmt.Sprintf, as this used to do, means a value containing "/", "?",
-// or "#" silently rewrites the request: a "/" adds path segments, and a "?"
-// replaces the query string the caller thought it was sending. Encoding each
-// segment independently makes a hostile value collide-proof, since nothing
-// it contains can be re-read as URL structure.
+// with fmt.Sprintf means a value containing "/", "?", or "#" silently rewrites
+// the request: a "/" adds path segments, and a "?" replaces the query string
+// the caller thought it was sending. Encoding each segment independently makes
+// a hostile value collide-proof, since nothing it contains can be re-read as
+// URL structure.
 //
 // The base must be an absolute URL with a host and no query or fragment of
 // its own; rawQuery, if non-empty, is appended verbatim and must therefore

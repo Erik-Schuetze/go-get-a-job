@@ -14,9 +14,9 @@ const ashbyDefaultBaseURL = "https://api.ashbyhq.com/posting-api/job-board"
 // Ashby fetches postings from a company's public Ashby job-board API:
 // GET https://api.ashbyhq.com/posting-api/job-board/{company}
 //
-// This is a free, unauthenticated, public API (verified live during
-// planning against Notion's board). Note it's a GET request despite some
-// third-party documentation suggesting POST.
+// This is a free, unauthenticated public API, verified against Notion's
+// board. It is a GET request even though some third-party documentation says
+// POST.
 type Ashby struct {
 	Company     string
 	DisplayName string

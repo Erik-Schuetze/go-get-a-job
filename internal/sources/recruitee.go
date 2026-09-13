@@ -16,9 +16,9 @@ const recruiteeDefaultBaseURL = "https://%s.recruitee.com"
 // Recruitee fetches postings from a company's public Recruitee offers API:
 // GET https://{company}.recruitee.com/api/offers/
 //
-// Free and unauthenticated (verified live during planning against xneelo and
-// Grid). An unknown company answers 404, so unlike SmartRecruiters a typo
-// here is loud rather than silent.
+// Free and unauthenticated, verified against xneelo and Grid. An unknown
+// company answers 404, so unlike SmartRecruiters a typo here is loud rather
+// than silent.
 type Recruitee struct {
 	Company     string
 	DisplayName string
@@ -123,20 +123,18 @@ func (r *Recruitee) Fetch(ctx context.Context) ([]model.Job, error) {
 	return jobs, nil
 }
 
-// recruiteeLocation joins the several location fields Recruitee spreads a
-// posting across. Nothing is dropped, because the pre-filter's whole-word
-// match only needs one of them to name either a workable place or a remote
-// marker - and the AI scorer, not this, decides what the combination means.
 // recruiteeLocation renders every place a posting carries, as comma-separated
 // segments with duplicates removed. Recruitee spreads location over three
 // overlapping fields - "location" is usually "City, Country" while "city" and
-// "country" repeat its halves - so rendering them joined naively produces
-// "Leipzig, Germany, Leipzig, Germany" and any allow-list entry matches twice.
+// "country" repeat its halves - so joining them naively produces
+// "Leipzig, Germany, Leipzig, Germany" and any accept entry matches twice.
 //
-// Over-inclusion is deliberate for the field that carries the remote flag:
-// Recruitee files a remote posting under its office city, so the marker has to
-// be present for the location pre-filter to hand the posting to the scorer
-// rather than dropping it as a foreign onsite role.
+// Nothing is dropped, which is deliberate: the pre-filter's whole-word match
+// only needs one segment to name a workable place or a remote marker, and the
+// AI scorer, not this, decides what the combination means. The remote flag is
+// its own segment because Recruitee files a remote posting under its office
+// city, so without the marker the pre-filter would drop it as a foreign onsite
+// role.
 func recruiteeLocation(o recruiteeOffer) string {
 	segments := make([]string, 0, 4)
 	add := func(value string) {

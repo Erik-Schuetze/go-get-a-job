@@ -8,8 +8,8 @@ import (
 )
 
 // leverFixture mirrors the real shape returned by
-// https://api.lever.co/v0/postings/{company}?mode=json (verified live
-// during planning against Spotify's board): a top-level JSON array.
+// https://api.lever.co/v0/postings/{company}?mode=json (verified against
+// Spotify's board): a top-level JSON array.
 const leverFixture = `[
   {
     "id": "abc-123",

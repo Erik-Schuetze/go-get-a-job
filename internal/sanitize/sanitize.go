@@ -4,10 +4,9 @@
 // Job postings are attacker-controlled: anyone can publish one, on any of
 // the boards this tool polls. Almost every field a connector reads out of a
 // posting (title, company, location, description) is therefore untrusted,
-// as is anything an AI provider echoes back about it. Nothing in this
-// package fixes a vulnerability found in this codebase - it is a boundary
-// that keeps untrusted bytes from acquiring meaning they were not meant to
-// have once they leave the pipeline:
+// as is anything an AI provider echoes back about it. This package fixes no
+// specific vulnerability; it is a boundary that keeps untrusted bytes from
+// acquiring meaning they were not meant to have once they leave the pipeline:
 //
 //   - Control characters (including ANSI/CSI escape sequences) would let a
 //     crafted title rewrite what a log line appears to say, or move a

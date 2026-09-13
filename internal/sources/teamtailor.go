@@ -20,8 +20,8 @@ const teamtailorDefaultBaseURL = "https://%s.teamtailor.com"
 // This is a JSON Feed (https://jsonfeed.org) whose items embed a schema.org
 // JobPosting under "_jobposting" - the same format the company's own careers
 // page uses to get indexed by job search engines, so it is intended to be
-// machine-read. Verified live during planning against Spacelift, which also
-// serves the same document from its custom careers subdomain.
+// machine-read. Verified against Spacelift, which serves the same document
+// from its custom careers subdomain too.
 type Teamtailor struct {
 	Company     string
 	DisplayName string
@@ -199,8 +199,8 @@ func (t *Teamtailor) Fetch(ctx context.Context) ([]model.Job, error) {
 // a "Remote, European Union" role under the company's registered office and
 // emit no other signal - neither jobLocationType nor
 // applicantLocationRequirements was present on any Spacelift posting. Read
-// alone, jobLocation would label that role "Warsaw, PL" and a Germany-scoped
-// allow-list would reject precisely the postings worth finding.
+// alone, jobLocation would label that role "Warsaw, PL" and an accept list
+// scoped to Germany would reject precisely the postings worth finding.
 func teamtailorLocation(title string, locations teamtailorLocations) string {
 	parts := make([]string, 0, len(locations)+1)
 	if scope := teamtailorTitleScope(title); scope != "" {

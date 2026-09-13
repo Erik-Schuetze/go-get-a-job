@@ -313,10 +313,10 @@ func TestNotifyWarning_IsDistinguishableFromAJobMatch(t *testing.T) {
 // of the layout the notification list is read from: the emoji carries the
 // score, and the tag carries the company.
 //
-// The briefcase tag is asserted absent by name because of how ntfy renders
-// tags: a tag matching an emoji short code is turned into an emoji *prepended
-// to the title*, so leaving "briefcase" in place would put 💼 next to the tier
-// emoji on every single notification. The check is on the header value rather
+// The tag is asserted absent by name because of how ntfy renders tags: a tag
+// matching an emoji short code is turned into an emoji *prepended to the
+// title*, so a stray "briefcase" tag would put 💼 next to the tier emoji on
+// every single notification. The check is on the header value rather
 // than on the rendered result, since that is the only thing this program
 // controls.
 func TestNotify_TierEmojiAndCompanyTagReplaceTheBriefcaseTag(t *testing.T) {

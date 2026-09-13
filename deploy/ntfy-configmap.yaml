@@ -11,8 +11,8 @@
 # as an unprivileged user (see ntfy-deployment.yaml), and binding a port below
 # 1024 requires CAP_NET_BIND_SERVICE - which is dropped. The Service keeps
 # port 80 so in-cluster callers (the CronJob, and the reverse proxy in front of
-# ntfy) don't need to change; only the Service's targetPort moved. If you do
-# change this port, update targetPort in ntfy-service.yaml to match.
+# ntfy) don't need to change. If you do change this port, update targetPort in
+# ntfy-service.yaml to match.
 apiVersion: v1
 kind: ConfigMap
 metadata:

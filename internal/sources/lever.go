@@ -14,8 +14,8 @@ const leverDefaultBaseURL = "https://api.lever.co/v0/postings"
 // Lever fetches postings from a company's public Lever job-board API:
 // GET https://api.lever.co/v0/postings/{company}?mode=json
 //
-// This is a free, unauthenticated, public API (verified live during
-// planning against Spotify's board).
+// This is a free, unauthenticated public API, verified against Spotify's
+// board.
 type Lever struct {
 	Company     string
 	DisplayName string
@@ -50,8 +50,7 @@ type leverPosting struct {
 	Categories       leverCategories `json:"categories"`
 
 	// WorkplaceType is the posting-level answer to "where does this happen"
-	// ("remote", "hybrid", "on-site"); it was already on the wire and
-	// unused. Display only.
+	// ("remote", "hybrid", "on-site"). Display only.
 	WorkplaceType string `json:"workplaceType"`
 }
 
