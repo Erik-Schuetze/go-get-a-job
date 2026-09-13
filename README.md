@@ -136,7 +136,7 @@ try things out; they assume you are in a clone of this repo.
 `.github/workflows/docker-build.yml` builds and publishes the image to
 `ghcr.io/erik-schuetze/go-get-a-job` automatically on every push to `main`
 (and on `v*` tags). Release image tags follow semver and mirror the git tag
-exactly, so tag `v0.2.0` publishes `v0.2.0` - the same string as the GitHub
+exactly, so tag `v0.5.1` publishes `v0.5.1` - the same string as the GitHub
 release and the same string you copy into the manifest. (`main` and a
 short-SHA tag are published alongside it for traceability, but both are
 mutable by definition, so nothing that runs unattended may reference them.)
@@ -145,7 +145,7 @@ mutable by definition, so nothing that runs unattended may reference them.)
 digest**, e.g.:
 
 ```yaml
-image: ghcr.io/erik-schuetze/go-get-a-job:0.1.0@sha256:d1fff42c...
+image: ghcr.io/erik-schuetze/go-get-a-job:v0.5.1@sha256:1030e831...
 imagePullPolicy: IfNotPresent
 ```
 
@@ -162,8 +162,8 @@ digest is your rollback. The tag is the one you passed in and the digest is
 the `Digest:` line it prints, so the two always agree:
 
 ```shell
-docker buildx imagetools inspect ghcr.io/erik-schuetze/go-get-a-job:0.1.0
-# -> look for the top-level "Digest:" (the multi-arch manifest list)
+docker buildx imagetools inspect ghcr.io/erik-schuetze/go-get-a-job:v0.5.1
+# -> the "Digest:" line is the digest to pin
 ```
 
 > `v0.1.0` predates that convention and was published as `0.1.0`, so it is
