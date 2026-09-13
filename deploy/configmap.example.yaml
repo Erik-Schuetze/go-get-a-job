@@ -31,7 +31,10 @@ data:
     sources:
       # Replace these with the companies you actually want to watch. See
       # "Verifying a board before you add it" in the README first: a wrong
-      # board token fails per-run and silently, not loudly.
+      # board token fails per-run and silently, not loudly. Supported types:
+      # greenhouse, lever, ashby, smartrecruiters, personio, recruitee,
+      # teamtailor, workable, and workday (which needs tenant/host/site
+      # instead of company).
       - type: greenhouse
         company: grafanalabs
         displayName: "Grafana Labs"

@@ -1,8 +1,8 @@
 // Package sources implements one connector per supported ATS (Applicant
-// Tracking System): Greenhouse, Lever, Ashby, SmartRecruiters, and a
-// generic Workday connector. Each connector normalizes its provider's
-// response shape into []model.Job so the rest of the pipeline never has
-// to care which board a posting came from.
+// Tracking System): Greenhouse, Lever, Ashby, SmartRecruiters, Personio,
+// Recruitee, Teamtailor, Workable, and a generic Workday connector. Each
+// connector normalizes its provider's response shape into []model.Job so the
+// rest of the pipeline never has to care which board a posting came from.
 package sources
 
 import (

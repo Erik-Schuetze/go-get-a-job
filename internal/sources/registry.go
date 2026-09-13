@@ -17,6 +17,14 @@ func New(cfg config.SourceConfig) (Source, error) {
 		return NewAshby(cfg.Company, cfg.DisplayName), nil
 	case "smartrecruiters":
 		return NewSmartRecruiters(cfg.Company, cfg.DisplayName), nil
+	case "personio":
+		return NewPersonio(cfg.Company, cfg.DisplayName), nil
+	case "recruitee":
+		return NewRecruitee(cfg.Company, cfg.DisplayName), nil
+	case "teamtailor":
+		return NewTeamtailor(cfg.Company, cfg.DisplayName), nil
+	case "workable":
+		return NewWorkable(cfg.Company, cfg.DisplayName), nil
 	case "workday":
 		return NewWorkday(cfg.Tenant, cfg.Host, cfg.Site, cfg.DisplayName), nil
 	default:

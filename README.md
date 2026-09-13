@@ -303,10 +303,11 @@ a repository you control rather than a public one or a fork of one. Whatever
 manages it, the ConfigMap is semi-trusted at run time - see [ConfigMap edits can
 steal your secrets](#configmap-edits-can-steal-your-secrets).
 
-### Adding a Greenhouse / Lever / Ashby / SmartRecruiters company
+### Adding a company on a hosted job board
 
-Find the company's board token from their careers page URL and add an
-entry:
+Greenhouse, Lever, Ashby, SmartRecruiters, Personio, Recruitee, Teamtailor and
+Workable are all one config entry: find the company's board token from its
+careers page URL and use it as `company`.
 
 ```yaml
 sources:
@@ -314,6 +315,39 @@ sources:
     company: some-board-token
     displayName: "Some Company"
 ```
+
+For the four whose board is a company **subdomain**, the token is that
+subdomain. Personio's feed is XML rather than JSON, and it is the ATS many
+mid-size German employers use:
+
+```yaml
+sources:
+  - type: personio          # https://contabo.jobs.personio.de
+    company: contabo
+    displayName: "Contabo"
+  - type: recruitee         # https://acme.recruitee.com
+    company: acme
+    displayName: "Acme"
+  - type: teamtailor        # https://acme.teamtailor.com
+    company: acme
+    displayName: "Acme"
+  - type: workable          # https://apply.workable.com/acme/
+    company: acme
+    displayName: "Acme"
+```
+
+Two of these behave unlike the rest, and it is worth knowing before you
+debug them:
+
+- **Personio does not 404 on a wrong company name.** It redirects to
+  Personio's own marketing site, so the response is HTML. The connector
+  detects that and reports "wrong company subdomain, or the board moved"
+  rather than a confusing XML parse error.
+- **Workable can answer `200` with an empty `jobs` list** for a slug that
+  is close to a real account. An unknown slug does 404, but a nearly-right
+  one does not, so an empty result is treated as success and the
+  dead-source guard (see [`guard:`](#guard---noticing-a-board-that-has-gone-quiet))
+  is what notices a board that has gone quiet.
 
 ### Adding a Workday company
 
@@ -377,6 +411,14 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://api.ashbyhq.com/posting-api/jo
 # "Bosch" does not), so check the body instead of the status code
 curl -sS 'https://api.smartrecruiters.com/v1/companies/BoschGroup/postings' |\
   grep -o '"totalFound":[0-9]*'
+
+# Personio / Recruitee / Teamtailor / Workable (404 = wrong slug, except
+# Personio and Workable - see "Adding a company on a hosted job board")
+curl -sS -o /dev/null -w '%{http_code}\n' https://contabo.jobs.personio.de/xml
+curl -sS -o /dev/null -w '%{http_code}\n' https://acme.recruitee.com/api/offers
+curl -sS -o /dev/null -w '%{http_code}\n' https://acme.teamtailor.com/jobs.json
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  'https://apply.workable.com/api/v1/widget/accounts/acme?details=true'
 ```
 
 Workday reports the specific problem in the status code, which is worth
