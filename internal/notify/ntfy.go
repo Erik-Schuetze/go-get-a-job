@@ -115,10 +115,10 @@ func NewNtfy(url, topic, token string, tiers []config.MatchTier) *Ntfy {
 //
 //	<scorer's reason>
 //
-// The emoji is the first character of the title and encodes the score, which
-// was previously only implicit in the prose. The location is in the title
-// because the title is what a collapsed notification shows, and without it two
-// postings for the same role at the same company are indistinguishable.
+// The emoji is the first character of the title and encodes the score. The
+// location is in the title because the title is what a collapsed notification
+// shows, and without it two postings for the same role at the same company are
+// indistinguishable.
 func (n *Ntfy) Notify(ctx context.Context, match Match) error {
 	job := match.Job
 	tier := n.tierFor(match.Score)
@@ -128,12 +128,12 @@ func (n *Ntfy) Notify(ctx context.Context, match Match) error {
 	headers := map[string]string{
 		"Title":    title,
 		"Priority": strconv.Itoa(tier.Priority),
-		// Replaces the fixed "briefcase" tag that used to live here. ntfy
-		// converts a tag matching an emoji short code into an emoji
-		// prepended to the title, so keeping it would render the 💼 next to
-		// the tier emoji - two emoji on every notification. A company slug
-		// matches no short code and is instead listed beneath the message,
-		// where it doubles as the thing that makes the feed skimmable.
+		// A company slug, not an icon: ntfy converts a tag matching an emoji
+		// short code into an emoji prepended to the title, so a "briefcase"
+		// tag would render the 💼 next to the tier emoji and put two emoji on
+		// every notification. A slug matches no short code and is instead
+		// listed beneath the message, where it doubles as the thing that
+		// makes the feed skimmable.
 		"Tags": companyTag(job.Company),
 	}
 	// Click becomes a tap target in the ntfy app. Only absolute http(s)

@@ -27,10 +27,11 @@ const (
 
 // ambiguousMarkers are the phrasings that say "this posting does not pin the
 // candidate to one country". They exist so that a genuinely location-free
-// posting reaches the AI scorer instead of being guessed at - and dropped -
-// by the pre-filter. Enumerating them in config is exactly what failed
-// before, when a bare "Remote" or "Anywhere" matched no entry and, with
-// unmatched at its default, nothing at all.
+// posting reaches the AI scorer instead of being guessed at - and dropped - by
+// the pre-filter. Enumerating these phrasings in config is the alternative, and
+// it fails in exactly this case: a bare "Remote" or "Anywhere" matches no entry
+// an operator thought to write, and with unmatched left at the default the
+// posting is discarded.
 //
 // Two groups, both ambiguous for the same reason: the pre-filter cannot say
 // where the posting legally is, and the AI scorer is the part of the pipeline

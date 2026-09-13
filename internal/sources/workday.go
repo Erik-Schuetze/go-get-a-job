@@ -13,8 +13,8 @@ import (
 
 const (
 	// workdayPageSize is the maximum page size Workday's list endpoint
-	// accepts; larger values return an HTTP 400 (verified live during
-	// planning against NVIDIA's board).
+	// accepts; larger values return an HTTP 400 (verified against NVIDIA's
+	// board).
 	workdayPageSize = 20
 	// workdayMaxResults is a safety cap against runaway pagination on
 	// unexpectedly huge boards.
@@ -32,13 +32,16 @@ const (
 //	POST https://{host}/wday/cxs/{tenant}/{site}/jobs
 //	  {"appliedFacets":{},"limit":20,"offset":0,"searchText":""}
 //
-// (verified live during planning against NVIDIA's real career site). To
-// onboard a new Workday company, open its real careers page with browser
-// devtools (Network tab), search for any job title, and find the request
-// to a URL matching the pattern above:
-//   - Host   = the full hostname (e.g. "atlassian.wd3.myworkdayjobs.com")
-//   - Tenant = the path segment right after /wday/cxs/ (e.g. "atlassian")
-//   - Site   = the path segment after that (e.g. "Atlassian") - case-sensitive
+// The endpoint is undocumented rather than private: the same request works
+// anonymously for most Workday customers (verified against NVIDIA's real
+// careers site), though some tenants answer 401 to any anonymous read. To
+// onboard a new Workday company, open its real careers page
+// with browser devtools (Network tab), search for any job title, and find the
+// request to a URL matching the pattern above:
+//   - Host   = the full hostname (e.g. "nvidia.wd5.myworkdayjobs.com")
+//   - Tenant = the path segment right after /wday/cxs/ (e.g. "nvidia")
+//   - Site   = the path segment after that (e.g. "NVIDIAExternalCareerSite"),
+//     case-sensitive
 type Workday struct {
 	Tenant      string
 	Host        string

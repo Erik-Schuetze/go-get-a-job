@@ -15,8 +15,8 @@ const greenhouseDefaultBaseURL = "https://boards-api.greenhouse.io/v1/boards"
 // Greenhouse fetches postings from a company's public Greenhouse job-board
 // API: GET https://boards-api.greenhouse.io/v1/boards/{company}/jobs
 //
-// This is a free, unauthenticated, public API used by many tech companies
-// (confirmed live during planning for Grafana Labs, GitLab, and HashiCorp).
+// This is a free, unauthenticated public API used by many tech companies;
+// Grafana Labs and GitLab, both in the example config, are verified live.
 type Greenhouse struct {
 	Company     string
 	DisplayName string

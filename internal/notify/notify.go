@@ -13,9 +13,8 @@ import (
 // Match is everything one delivered match carries: the posting itself, the
 // scorer's verdict on it, and the terms the scorer said drove that verdict.
 //
-// It is a struct rather than a longer argument list because this is the third
-// piece of information the notifier has needed and the fourth would otherwise
-// be another parameter on every implementation and every test fake.
+// It is a struct rather than a longer argument list so that adding another
+// field does not change every Notifier implementation and every test fake.
 type Match struct {
 	Job model.Job
 

@@ -31,11 +31,10 @@ type Config struct {
 // failure: the outbound request budget, and the alert that fires when a
 // source stops returning postings.
 //
-// Both exist because the failure this project is built to prevent is
-// silence. A source that returns nothing - because its board was retired,
-// its API changed, or its slug was mistyped - looks exactly like a quiet
-// week, and the operator cannot tell the difference by reading a
-// notification feed that is simply empty.
+// The failure both address is silence: a source that returns nothing -
+// because its board was retired, its API changed, or its slug was mistyped -
+// looks exactly like a quiet week, and the operator cannot tell the
+// difference by reading a notification feed that is simply empty.
 type GuardConfig struct {
 	// DeadSourceRuns is how many consecutive successful runs a source may
 	// return zero postings before a warning is sent, and how often that
@@ -301,8 +300,8 @@ type NtfyConfig struct {
 	// notification carries. Optional: omitting it uses DefaultMatchTiers.
 	//
 	// It is config rather than code because the right boundaries are a
-	// property of the operator's own corpus, not of the program: the
-	// defaults were chosen from a measured 46-match distribution, and a
+	// property of the operator's own corpus, not of the program: the defaults
+	// were chosen from a measured distribution of 46 notified matches, and a
 	// different company list will produce a different shape.
 	MatchTiers []MatchTier `yaml:"matchTiers,omitempty"`
 }

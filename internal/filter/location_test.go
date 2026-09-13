@@ -89,9 +89,9 @@ func TestMatchLocation(t *testing.T) {
 			wantRule:   "Germany",
 		},
 		{
-			// The old allow-list needed a "Remote (Global)" entry to catch
-			// this, and a portal writing "Remote - Germany" matched nothing.
-			// Naming the country is enough now; the decorators do not matter.
+			// The country name is what decides this; the portal's decoration
+			// ("(Remote)", "Remote - Germany") does not, because the match is
+			// a word-boundary test on the normalized location.
 			name:       "germany with remote suffix accepted",
 			location:   "Berlin, Germany (Remote)",
 			cfg:        personal,
@@ -124,8 +124,9 @@ func TestMatchLocation(t *testing.T) {
 			wantRule:   "remote",
 		},
 		{
-			// "Worldwide" needed its own allow entry before this change,
-			// and portals that worded it differently were missed.
+			// Portals word this differently ("Worldwide", "Remote (Global)",
+			// bare "Remote"), which is why these reach the scorer as ambiguous
+			// markers rather than having to be in the accept list.
 			name:       "worldwide reaches the scorer",
 			location:   "Worldwide",
 			cfg:        personal,

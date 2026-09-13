@@ -50,8 +50,7 @@ spec:
           automountServiceAccountToken: false
           # Matches the distroless "nonroot" base image's fixed UID/GID.
           # fsGroup is required so the mounted PVC is actually writable by
-          # that UID - without it, SQLite can't create its database file
-          # (verified while building this manifest).
+          # that UID - without it, SQLite can't create its database file.
           securityContext:
             runAsNonRoot: true
             runAsUser: 65532

@@ -27,8 +27,8 @@ func main() {
 	os.Exit(run())
 }
 
-// run contains the actual program logic and returns a process exit code,
-// keeping main() itself trivial and untestable-code-free.
+// run contains the actual program logic and returns a process exit code, so
+// main() stays trivial and the logic stays testable.
 func run() int {
 	configPath := flag.String("config", "config.yaml", "path to the go-get-a-job YAML config file")
 	logLevel := flag.String("log-level", "info", "log verbosity: debug, info, warn, or error")

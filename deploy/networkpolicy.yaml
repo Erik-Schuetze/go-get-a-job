@@ -1,7 +1,7 @@
 # NetworkPolicy for the go-get-a-job namespace.
 #
-# Before this file existed the namespace had no policy at all: every pod could
-# reach every other pod and the whole internet, and any pod could be reached
+# Without a NetworkPolicy the namespace has no policy at all: every pod can
+# reach every other pod and the whole internet, and any pod can be reached
 # from anywhere in the cluster. This is a default-deny with narrowly-scoped
 # allows for the only three flows that actually need to exist.
 #

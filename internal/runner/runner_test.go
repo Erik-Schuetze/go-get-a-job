@@ -541,11 +541,9 @@ func TestRunner_Run_CapsUntrustedLogAttributeLength(t *testing.T) {
 
 // --- location pre-filter diagnostics -----------------------------------
 
-// The location pre-filter used to drop postings silently, and used to be the
-// only thing standing between a Canada-based posting and the notifier because
-// the accept list was inert. These tests pin the new behaviour down: naming a
-// place the accept list does not cover is dropped and reported, while
-// anything that is not tied to a country reaches the scorer.
+// These tests pin down what the pre-filter reports: naming a place the accept
+// list does not cover is dropped and reported, while anything that is not tied
+// to a country reaches the scorer, which holds the relocation rule.
 func TestRunner_Run_DropsUnlistedLocationAndReportsWhy(t *testing.T) {
 	unlisted := model.Job{
 		ID:       "job-ca",
@@ -615,11 +613,10 @@ func TestRunner_Run_DropsUnlistedLocationAndReportsWhy(t *testing.T) {
 }
 
 func TestRunner_Run_RemoteLocationInAForeignCountryReachesTheScorer(t *testing.T) {
-	// The regression test for the reported leak, inverted. "Remote - Canada"
-	// used to be caught only because Canada was enumerated in a deny list.
-	// Without one it reaches the AI scorer, which holds the relocation rule,
-	// and gets dropped there instead of by a list that has to name every
-	// country in the world.
+	// The counterpart to the test above: a remote role in a country the accept
+	// list does not name is not caught by the pre-filter at all, so it reaches
+	// the AI scorer, which holds the relocation rule, and is dropped there
+	// rather than by a list that would have to name every country.
 	job := model.Job{ID: "job-ca-remote", Title: "Platform Engineer", Location: "Remote - Canada"}
 
 	scorer := newFakeScorer()

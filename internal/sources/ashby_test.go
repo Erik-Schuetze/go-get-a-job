@@ -8,8 +8,8 @@ import (
 )
 
 // ashbyFixture mirrors the real shape returned by
-// https://api.ashbyhq.com/posting-api/job-board/{company} (verified live
-// during planning against Notion's board, via GET, not POST).
+// https://api.ashbyhq.com/posting-api/job-board/{company} (verified against
+// Notion's board, via GET, not POST).
 const ashbyFixture = `{
   "jobs": [
     {

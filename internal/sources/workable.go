@@ -17,8 +17,8 @@ const workableDefaultBaseURL = "https://apply.workable.com/api/v1/widget/account
 // GET https://apply.workable.com/api/v1/widget/accounts/{company}?details=true
 //
 // This is the endpoint behind Workable's embeddable job widget, so it is
-// public and unauthenticated by design. Verified live during planning against
-// Hugging Face. An unknown account answers 404, so a mistyped slug is loud.
+// public and unauthenticated by design, verified against Hugging Face. An
+// unknown account answers 404, so a mistyped slug is loud.
 type Workable struct {
 	Company     string
 	DisplayName string

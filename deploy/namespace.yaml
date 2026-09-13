@@ -1,8 +1,8 @@
 # Pod Security Admission for the go-get-a-job namespace.
 #
-# Before this label existed the namespace had no PSA policy at all, which
-# means the default ("privileged") applied: a root container with an
-# unrestricted seccomp profile and full capabilities would have been admitted
+# Without this label the namespace has no PSA policy, so the default
+# ("privileged") applies: a root container with an
+# unrestricted seccomp profile and full capabilities would be admitted
 # without comment. Both workloads in this namespace are already hardened to
 # satisfy "restricted" (non-root, no privilege escalation, all capabilities
 # dropped, RuntimeDefault seccomp), so enforcing it costs nothing here and

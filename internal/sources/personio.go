@@ -17,10 +17,9 @@ const personioDefaultBaseURL = "https://%s.jobs.personio.de"
 // GET https://{company}.jobs.personio.de/xml
 //
 // This is a free, unauthenticated feed that Personio advertises for exactly
-// this purpose (syndicating a careers page), verified live during planning
-// against Stackable and Contabo. It is the one connector here that is
-// XML rather than JSON, so it does its own decoding rather than using
-// httpbody.DecodeJSON.
+// this purpose (syndicating a careers page), verified against Stackable and
+// Contabo. It is the one connector here that is XML rather than JSON, so it
+// does its own decoding rather than using httpbody.DecodeJSON.
 //
 // Personio's raw feed carries no posting URL, only an ID. For every board
 // checked, https://{company}.jobs.personio.de/job/{id} resolves to the real

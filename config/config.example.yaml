@@ -20,7 +20,7 @@
 sources:
   # Greenhouse, Lever, Ashby, SmartRecruiters, Personio, Recruitee,
   # Teamtailor, and Workable all expose free public job-board APIs keyed by
-  # a company "board token"/slug — usually just the part of the company's
+  # a company "board token"/slug: usually just the part of the company's
   # own careers URL that identifies them. Find it by opening the company's
   # careers page and looking at the host, e.g.
   # https://job-boards.greenhouse.io/grafanalabs -> company: grafanalabs
@@ -32,8 +32,8 @@ sources:
   # Personio is worth knowing about for a Germany-based search: it is the
   # ATS many mid-size German employers use, and its feed is XML rather than
   # JSON. It is also the one board that does not 404 on a wrong company
-  # name — it redirects to Personio's own marketing site — but the connector
-  # detects that and says so instead of reporting a parse failure.
+  # name; it redirects to Personio's own marketing site instead, and the
+  # connector says so rather than reporting a parse failure.
   - type: greenhouse
     company: grafanalabs
     displayName: "Grafana Labs"
@@ -41,10 +41,10 @@ sources:
     company: gitlab
     displayName: "GitLab"
 
-  # HashiCorp and Atlassian used to be listed here; both are unreachable
-  # with any connector this project has, and in practice only ever
-  # produced one "source fetch failed" log line per run:
-  #   - HashiCorp: its Greenhouse board ("hashicorp") has been retired -
+  # HashiCorp and Atlassian are not listed because no connector here can
+  # read them; leaving them in only produces one "source fetch failed" log
+  # line per run:
+  #   - HashiCorp: its Greenhouse board ("hashicorp") was retired -
   #     boards.greenhouse.io/hashicorp now 301s to a 404. HashiCorp hires
   #     through IBM's careers site, which exposes no public JSON API this
   #     project can read.
@@ -76,7 +76,7 @@ sources:
   #   displayName: "NVIDIA"
 
   # Personio / Recruitee / Teamtailor / Workable: same shape as the ones
-  # above — set "company" to the subdomain (or, for Workable, the account
+  # above - set "company" to the subdomain (or, for Workable, the account
   # slug in the apply.workable.com URL).
   # - type: personio
   #   company: contabo
@@ -88,17 +88,12 @@ sources:
   #   company: huggingface
   #   displayName: "Hugging Face"
 
-  # Not covered in v1 (no simple public API; would need bespoke/fragile
+  # Not covered (no simple public API; would need bespoke/fragile
   # scraping): Google (careers.google.com is a custom platform), SAP
   # (SuccessFactors public job search has no open JSON endpoint), Apple
-  # (jobs.apple.com is a custom platform). Left here, commented out, as
-  # placeholders in case connectors are added later.
-  # - type: custom
-  #   displayName: "Google"
-  # - type: custom
-  #   displayName: "SAP"
-  # - type: custom
-  #   displayName: "Apple"
+  # (jobs.apple.com is a custom platform). There is no connector for any of
+  # them to point at, so they are described here rather than left as
+  # commented-out entries that would fail validation if uncommented.
 
 filter:
   # Recall gate: a job's title+description must match at least one of these
@@ -164,7 +159,7 @@ ai:
   model: deepseek-chat
 
   # Free-text description of what you're looking for. Sent verbatim to the
-  # model alongside each candidate job — edit this any time to change what
+  # model alongside each candidate job: edit this any time to change what
   # counts as a match, no code changes required.
   #
   # This is the precision lever, and the place to say which of the
@@ -192,7 +187,7 @@ ai:
   #  Treat "Remote - <country>" exactly like an onsite role in that country.
   #  A role that is remote globally, or workable from Germany, is fine. If a
   #  posting requires being legally based outside Germany or requires
-  #  relocation, score it 0.2 or below.
+  #  relocation, set locationOk to false.
 
 notify:
   type: ntfy
@@ -215,8 +210,8 @@ notify:
     #
     # These are config rather than code because the right boundaries belong to
     # your own company list, not to the program: the defaults were chosen from
-    # the scores a real 47-company config produced, and a different list will
-    # have a different shape.
+    # the scores a real run produced (46 notified matches), and a different
+    # list will have a different shape.
     #
     # Rules: highest minScore first, and the last entry MUST omit minScore so
     # that every notified posting gets an emoji.
@@ -254,9 +249,9 @@ guard:
   # would fire constantly and teach you to ignore the one alert that matters.
   #
   # The failures it catches: a board slug that was renamed or moved to another
-  # ATS, an API that changed shape, a company that stopped publishing where it
-  # used to. SmartRecruiters is the sharp case - it answers *any* slug with
-  # "200, no postings", so a typo there is otherwise perfectly silent.
+  # ATS, an API that changed shape, a company that moved hiring behind a login.
+  # SmartRecruiters is the sharp case - it answers *any* slug with "200, no
+  # postings", so a typo there is otherwise perfectly silent.
   #
   # A source that returns postings resets the count, and a source that errors
   # is never counted here (that is reported as an error instead).
