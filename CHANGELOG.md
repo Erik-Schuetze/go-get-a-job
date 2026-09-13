@@ -1,4 +1,4 @@
-## [0.6.0] - 2026-09-13
+## [0.5.1] - 2026-09-13
 
 A bug-fix release for the one defect the first real batch exposed: a posting
 advertised in more than one place was announced as whichever place the board
@@ -392,8 +392,8 @@ Both are fixed.
   were accepted and notified about under the old rules are not re-scored or
   withdrawn.
 
-[Unreleased]: https://github.com/Erik-Schuetze/go-get-a-job/compare/v0.6.0...HEAD
-[0.6.0]: https://github.com/Erik-Schuetze/go-get-a-job/releases/tag/v0.6.0
+[Unreleased]: https://github.com/Erik-Schuetze/go-get-a-job/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/Erik-Schuetze/go-get-a-job/releases/tag/v0.5.1
 [0.5.0]: https://github.com/Erik-Schuetze/go-get-a-job/releases/tag/v0.5.0
 [0.4.0]: https://github.com/Erik-Schuetze/go-get-a-job/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Erik-Schuetze/go-get-a-job/releases/tag/v0.3.0
