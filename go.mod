@@ -1,6 +1,6 @@
 module github.com/Erik-Schuetze/go-get-a-job
 
-go 1.27.1
+go 1.27.4
 
 require (
 	gopkg.in/yaml.v3 v3.0.1
